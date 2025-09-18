@@ -47,6 +47,12 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Nutrition Platform Colors
+        health: "hsl(var(--health-green))",
+        energy: "hsl(var(--energy-orange))",
+        tech: "hsl(var(--tech-blue))",
+        mint: "hsl(var(--fresh-mint))",
+        cream: "hsl(var(--warm-cream))",
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",
