@@ -3,20 +3,21 @@ import { Badge } from "@/components/ui/badge";
 import { Camera, Brain, TrendingUp } from "lucide-react";
 
 const HowItWorks = () => {
+
   const steps = [
     {
       step: "01",
       icon: Camera,
       title: "Capture Your Meal",
       description: "Simply take a photo of your food or manually enter ingredients. Our AI instantly recognizes what you're eating.",
-      color: "gradient-primary"
+      color: "bg-primary"
     },
     {
       step: "02", 
       icon: Brain,
       title: "AI Analysis",
       description: "Advanced computer vision analyzes ingredients, portion sizes, and nutritional content with remarkable accuracy.",
-      color: "gradient-accent"
+      color: "bg-accent"
     },
     {
       step: "03",
@@ -28,22 +29,22 @@ const HowItWorks = () => {
   ];
 
   return (
-    <section id="how-it-works" className="py-20">
+    <section id="how-it-works" className="py-12 sm:py-16 lg:py-20">
       <div className="container px-4">
-        <div className="text-center mb-16">
-          <Badge variant="outline" className="mb-4">
+        <div className="text-center mb-8 sm:mb-12 lg:mb-16">
+          <Badge variant="outline" className="mb-3 sm:mb-4 text-xs sm:text-sm">
             How it Works
           </Badge>
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl mb-4">
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight mb-3 sm:mb-4 px-4">
             Three Simple Steps to 
             <span className="gradient-primary bg-clip-text text-transparent"> Better Nutrition</span>
           </h2>
-          <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
+          <p className="text-base sm:text-lg text-muted-foreground max-w-2xl mx-auto px-4">
             Our streamlined process makes healthy eating effortless and intelligent
           </p>
         </div>
 
-        <div className="grid md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
           {steps.map((step, index) => (
             <div key={index} className="relative">
               {/* Connection Line */}
@@ -51,39 +52,21 @@ const HowItWorks = () => {
                 <div className="hidden md:block absolute top-16 left-full w-full h-0.5 bg-gradient-to-r from-primary/50 to-transparent transform translate-x-8 -translate-y-1/2 z-0"></div>
               )}
               
-              <Card className="relative z-10 p-8 text-center shadow-soft hover:shadow-medium transition-all duration-300 hover:-translate-y-1">
-                <div className="relative mb-6">
-                  <div className={`w-16 h-16 ${step.color} rounded-xl flex items-center justify-center mx-auto mb-4`}>
-                    <step.icon className="h-8 w-8 text-white" />
+              <Card className="relative z-10 p-6 sm:p-8 text-center shadow-soft hover:shadow-medium transition-all duration-300 hover:-translate-y-1">
+                <div className="relative mb-4 sm:mb-6">
+                  <div className={`w-12 h-12 sm:w-14 sm:h-14 lg:w-16 lg:h-16 ${step.color} rounded-xl flex items-center justify-center mx-auto mb-3 sm:mb-4`}>
+                    <step.icon className="h-6 w-6 sm:h-7 sm:w-7 lg:h-8 lg:w-8 text-white" />
                   </div>
-                  <Badge variant="secondary" className="absolute -top-2 -right-2 font-bold">
+                  <Badge variant="secondary" className="absolute -top-2 -right-2 font-bold text-xs sm:text-sm">
                     {step.step}
                   </Badge>
                 </div>
                 
-                <h3 className="text-xl font-semibold mb-4">{step.title}</h3>
-                <p className="text-muted-foreground">{step.description}</p>
+                <h3 className="text-lg sm:text-xl font-semibold mb-2 sm:mb-4">{step.title}</h3>
+                <p className="text-sm sm:text-base text-muted-foreground">{step.description}</p>
               </Card>
             </div>
           ))}
-        </div>
-
-        {/* CTA Section */}
-        <div className="text-center mt-16">
-          <div className="inline-flex items-center justify-center p-8 gradient-hero rounded-2xl shadow-strong">
-            <div className="text-center text-white">
-              <h3 className="text-2xl font-bold mb-4">Ready to Transform Your Nutrition?</h3>
-              <p className="mb-6 opacity-90">Join thousands who've revolutionized their eating habits with AI</p>
-              <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                <button className="px-8 py-3 bg-white text-primary font-semibold rounded-lg hover:bg-white/90 transition-colors">
-                  Start Free Trial
-                </button>
-                <button className="px-8 py-3 border border-white text-white font-semibold rounded-lg hover:bg-white/10 transition-colors">
-                  Watch Demo
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </section>
