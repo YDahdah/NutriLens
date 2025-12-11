@@ -25,7 +25,7 @@ Transform your diet with AI-powered food analysis, personalized tracking, and in
 
 ### Backend
 - **Flask** (Python) REST API
-- **MySQL** database
+- **MongoDB** database
 - **OpenRouter API** for AI chat and vision capabilities
 
 ### Testing
@@ -38,7 +38,7 @@ Transform your diet with AI-powered food analysis, personalized tracking, and in
 ### Prerequisites
 - Node.js 18+ and npm
 - Python 3.8+
-- MySQL database
+- MongoDB database
 
 ### Installation
 
@@ -154,9 +154,9 @@ NutriLens/
   - Website: https://flask.palletsprojects.com/
   - License: BSD-3-Clause
 
-- **MySQL** - Relational database management system
-  - Website: https://www.mysql.com/
-  - License: GPL
+- **MongoDB** - NoSQL document database
+  - Website: https://www.mongodb.com/
+  - License: Server Side Public License (SSPL)
 
 ### Testing Libraries
 
