@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { Eye, EyeOff, Mail, CheckCircle2 } from 'lucide-react';
+import { Eye, EyeOff, Mail, CheckCircle2, Loader2 } from 'lucide-react';
 import ForgotPasswordModal from './ForgotPasswordModal';
+import GoogleSignInButton from './GoogleSignInButton';
+import ErrorBoundary from './ErrorBoundary';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface AuthModalProps {
@@ -24,10 +27,15 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showVerificationMessage, setShowVerificationMessage] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
   const { login, signup, isDatabaseAvailable } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
 
-  // Reset form state when modal opens
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+  const isGoogleOAuthEnabled = Boolean(googleClientId);
+
   useEffect(() => {
     if (isOpen) {
       setEmail('');
@@ -35,6 +43,8 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
       setName('');
       setShowPassword(false);
       setShowVerificationMessage(false);
+      setVerificationCode('');
+      setIsVerifying(false);
     }
   }, [isOpen]);
 
@@ -56,6 +66,8 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
             setEmail('');
             setPassword('');
             setShowPassword(false);
+            // Navigate to about page (home)
+            navigate('/');
           } else {
             if (!isDatabaseAvailable) {
               toast({
@@ -79,17 +91,26 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
           });
         }
       } else {
-        // Signup mode
         const result = await signup(name, email, password);
         
         if (result.success) {
-          // Show verification message
           setShowVerificationMessage(true);
-          toast({
-            title: 'Registration Successful!',
-            description: 'Please check your email to verify your account before logging in.',
-          });
-          // Don't close the modal - let user see the verification message
+          // If verification code is provided (email failed), pre-fill it
+          if (result.verificationCode) {
+            setVerificationCode(result.verificationCode);
+            toast({
+              title: 'Registration Successful!',
+              description: result.emailSent 
+                ? 'Please check your email for the verification code.'
+                : 'Email could not be sent. Your verification code is shown below.',
+              variant: result.emailSent ? 'default' : 'destructive',
+            });
+          } else {
+            toast({
+              title: 'Registration Successful!',
+              description: 'Please check your email for the verification code.',
+            });
+          }
         } else {
           if (!isDatabaseAvailable) {
             toast({
@@ -126,7 +147,7 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
           </DialogTitle>
           <DialogDescription className="text-sm sm:text-base">
             {showVerificationMessage 
-              ? `We've sent a verification link to ${email}`
+              ? `We've sent a verification code to ${email}`
               : (mode === 'login' 
                 ? 'Enter your credentials to access your nutrition tracking dashboard.'
                 : 'Create a new account to start tracking your nutrition with AI-powered insights.'
@@ -192,6 +213,28 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
           </Button>
         </form>
 
+        <>
+          <div className="relative">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">Or continue with</span>
+            </div>
+          </div>
+          <GoogleSignInButton
+            mode={mode}
+            onSuccess={() => {
+              onClose();
+              setEmail('');
+              setPassword('');
+              // Navigate to about page (home)
+              navigate('/');
+            }}
+            disabled={isLoading}
+          />
+        </>
+
         {mode === 'login' && (
           <div className="text-center">
             <button
@@ -210,8 +253,14 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
               Don't have an account?{' '}
               <button
                 type="button"
-                className="text-primary hover:underline"
-                onClick={() => onModeChange?.('signup')}
+                className="text-primary hover:underline cursor-pointer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (onModeChange) {
+                    onModeChange('signup');
+                  }
+                }}
               >
                 Sign up
               </button>
@@ -221,8 +270,14 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
               Already have an account?{' '}
               <button
                 type="button"
-                className="text-primary hover:underline"
-                onClick={() => onModeChange?.('login')}
+                className="text-primary hover:underline cursor-pointer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (onModeChange) {
+                    onModeChange('login');
+                  }
+                }}
               >
                 Sign in
               </button>
@@ -232,53 +287,160 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
           </>
         ) : (
           <div className="space-y-4">
-            <Alert className="border-green-200 bg-green-50">
-              <CheckCircle2 className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-green-800">
-                <p className="font-semibold mb-2">Verification email sent!</p>
-                <p className="text-sm mb-3">
-                  We've sent a verification link to your email address. Please click the link in the email to verify your account before logging in.
-                </p>
-                <p className="text-sm text-green-700">
-                  Didn't receive the email? Check your spam folder or click "Resend Email" below.
-                </p>
-              </AlertDescription>
-            </Alert>
+            {verificationCode ? (
+              <Alert className="border-yellow-200 bg-yellow-50">
+                <Mail className="h-4 w-4 text-yellow-600" />
+                <AlertDescription className="text-yellow-800">
+                  <p className="font-semibold mb-2">Email could not be sent</p>
+                  <p className="text-sm mb-3">
+                    Your verification code is shown below. Please enter it to verify your account.
+                  </p>
+                  <div className="bg-white border-2 border-yellow-300 rounded-lg p-3 text-center my-2">
+                    <p className="text-xs text-yellow-700 mb-1">Your Verification Code:</p>
+                    <p className="text-2xl font-mono font-bold text-yellow-900 tracking-widest">
+                      {verificationCode}
+                    </p>
+                  </div>
+                  <p className="text-sm text-yellow-700">
+                    The code has been pre-filled below. You can also copy it manually.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Alert className="border-green-200 bg-green-50">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <AlertDescription className="text-green-800">
+                  <p className="font-semibold mb-2">Verification code sent!</p>
+                  <p className="text-sm mb-3">
+                    We've sent a 6-digit verification code to your email address. Enter it below to verify your account.
+                  </p>
+                  <p className="text-sm text-green-700">
+                    Didn't receive the code? Check your spam folder or click "Resend Code" below.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
             
-            <div className="flex flex-col sm:flex-row gap-2">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="verification-code">Verification Code</Label>
+                <Input
+                  id="verification-code"
+                  type="text"
+                  value={verificationCode}
+                  onChange={(e) => {
+                    const value = e.target.value.replace(/\D/g, ''); // Only allow digits
+                    if (value.length <= 6) {
+                      setVerificationCode(value);
+                    }
+                  }}
+                  placeholder="000000"
+                  maxLength={6}
+                  className="text-center text-2xl font-mono tracking-widest"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter the 6-digit code sent to {email}
+                </p>
+              </div>
+              
               <Button
                 type="button"
-                variant="outline"
-                className="flex-1 w-full sm:w-auto"
+                className="w-full"
                 onClick={async () => {
-                  try {
-                    const { apiClient } = await import('@/utils/apiClient');
-                    const response = await apiClient.resendVerification(email);
-                    if (response.success) {
-                      toast({
-                        title: 'Email sent!',
-                        description: 'A new verification email has been sent to your inbox.',
-                      });
-                    }
-                  } catch (error) {
+                  if (!verificationCode || verificationCode.length !== 6) {
                     toast({
-                      title: 'Failed to resend email',
-                      description: 'Please try again later.',
+                      title: 'Invalid Code',
+                      description: 'Please enter a valid 6-digit verification code.',
                       variant: 'destructive',
                     });
+                    return;
+                  }
+                  
+                  setIsVerifying(true);
+                  try {
+                    const { apiClient } = await import('@/utils/apiClient');
+                    const response = await apiClient.verifyEmailCode(email, verificationCode);
+                    if (response.success) {
+                      toast({
+                        title: 'Email Verified!',
+                        description: 'Your email has been verified. You can now log in.',
+                      });
+                      onClose();
+                      setShowVerificationMessage(false);
+                      setVerificationCode('');
+                      // Navigate to about page (home)
+                      navigate('/');
+                      // Switch to login mode
+                      onModeChange?.('login');
+                    } else {
+                      toast({
+                        title: 'Verification Failed',
+                        description: response.message || 'Invalid verification code. Please try again.',
+                        variant: 'destructive',
+                      });
+                    }
+                  } catch (error: any) {
+                    toast({
+                      title: 'Verification Error',
+                      description: error?.message || 'Failed to verify email. Please try again.',
+                      variant: 'destructive',
+                    });
+                  } finally {
+                    setIsVerifying(false);
                   }
                 }}
+                disabled={isVerifying || verificationCode.length !== 6}
               >
-                <Mail className="h-4 w-4 mr-2" />
-                Resend Email
+                {isVerifying ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  'Verify Email'
+                )}
               </Button>
-              <Button
-                type="button"
-                className="flex-1"
-                onClick={onClose}
-              >
-                Close
-              </Button>
+              
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1 w-full sm:w-auto"
+                  onClick={async () => {
+                    try {
+                      const { apiClient } = await import('@/utils/apiClient');
+                      const response = await apiClient.resendVerification(email);
+                      if (response.success) {
+                        toast({
+                          title: 'Code sent!',
+                          description: 'A new verification code has been sent to your inbox.',
+                        });
+                        setVerificationCode('');
+                      }
+                    } catch (error) {
+                      toast({
+                        title: 'Failed to resend code',
+                        description: 'Please try again later.',
+                        variant: 'destructive',
+                      });
+                    }
+                  }}
+                >
+                  <Mail className="h-4 w-4 mr-2" />
+                  Resend Code
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="flex-1"
+                  onClick={() => {
+                    setShowVerificationMessage(false);
+                    setVerificationCode('');
+                  }}
+                >
+                  Change Email
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -289,7 +451,6 @@ const AuthModal = ({ isOpen, onClose, mode, onModeChange }: AuthModalProps) => {
         onClose={() => setIsForgotPasswordOpen(false)}
         onBackToLogin={() => {
           setIsForgotPasswordOpen(false);
-          // Keep the login modal open
         }}
       />
     </Dialog>

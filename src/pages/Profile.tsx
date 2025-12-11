@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import UserDataService, { UserProfile } from '@/services/UserDataService';
 import { apiClient } from '@/utils/apiClient';
 import Footer from '@/components/Footer';
 import { useToast } from '@/hooks/use-toast';
+import { logger } from '@/utils/logger';
 
 const Profile = () => {
   const { user, isAuthenticated } = useAuth();
@@ -36,16 +37,9 @@ const Profile = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isRemovingPhoto, setIsRemovingPhoto] = useState(false);
+  const hasLoadedProfileRef = useRef(false);
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadProfile();
-      loadUserInfo();
-      loadProfilePhoto();
-    }
-  }, [isAuthenticated]);
-
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     try {
       const profile = await userDataService.getUserProfile();
       if (profile) {
@@ -56,9 +50,9 @@ const Profile = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userDataService]);
 
-  const loadUserInfo = async () => {
+  const loadUserInfo = useCallback(async () => {
     try {
       // Check if user is authenticated before making request
       const token = localStorage.getItem('nutriai_token');
@@ -81,18 +75,18 @@ const Profile = () => {
         return;
       }
       // Only log non-401 errors
-      console.error('Failed to load user info:', error);
+      logger.error('Failed to load user info:', error);
     }
-  };
+  }, [isAuthenticated]);
 
-  const loadProfilePhoto = async () => {
+  const loadProfilePhoto = useCallback(async () => {
     try {
       const photoUrl = await userDataService.getProfilePhoto();
       setProfilePhoto(photoUrl);
     } catch (error) {
-      console.error('Failed to load profile photo:', error);
+      logger.error('Failed to load profile photo:', error);
     }
-  };
+  }, [userDataService]);
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

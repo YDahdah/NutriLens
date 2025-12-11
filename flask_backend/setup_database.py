@@ -49,6 +49,76 @@ SEED_FOODS = [
         'serving_weight_grams': 100,
         'tags': 'avocado,fruit,healthy-fat'
     },
+    {
+        'name': 'Chicken Burger',
+        'category': 'protein',
+        'calories': 600,
+        'protein': 30,
+        'carbs': 45,
+        'fat': 28,
+        'fiber': 2,
+        'sugar': 5,
+        'sodium': 850,
+        'serving_size': '1 piece',
+        'serving_weight_grams': 180,
+        'tags': 'chicken,burger,fast-food,protein'
+    },
+    {
+        'name': 'Kunafa',
+        'category': 'dessert',
+        'calories': 350,
+        'protein': 6,
+        'carbs': 45,
+        'fat': 16,
+        'fiber': 1,
+        'sugar': 25,
+        'sodium': 200,
+        'serving_size': '100 g',
+        'serving_weight_grams': 100,
+        'tags': 'kunafa,dessert,middle-eastern,sweet'
+    },
+    {
+        'name': 'Lebanese Bread',
+        'category': 'grain',
+        'calories': 170,
+        'protein': 5,
+        'carbs': 33,
+        'fat': 1,
+        'fiber': 2,
+        'sugar': 1,
+        'sodium': 400,
+        'serving_size': '1 piece',
+        'serving_weight_grams': 60,
+        'tags': 'lebanese-bread,pita,bread,middle-eastern,grain'
+    },
+    {
+        'name': 'Tabbouleh',
+        'category': 'salad',
+        'calories': 130,
+        'protein': 3,
+        'carbs': 20,
+        'fat': 5,
+        'fiber': 3,
+        'sugar': 2,
+        'sodium': 300,
+        'serving_size': '100 g',
+        'serving_weight_grams': 100,
+        'tags': 'tabbouleh,salad,middle-eastern,lebanese,parsley'
+    },
+    {
+        'name': 'Bemye',
+        'category': 'vegetable',
+        'calories': 140,
+        'protein': 2,
+        'carbs': 7,
+        'fat': 0.2,
+        'fiber': 3,
+        'sugar': 1,
+        'sodium': 7,
+        'serving_size': '100 g',
+        'serving_weight_grams': 100,
+        'tags': 'bemye,okra,bamia,middle-eastern,vegetable'
+    },
 ]
 
 

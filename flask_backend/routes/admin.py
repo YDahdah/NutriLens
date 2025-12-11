@@ -414,58 +414,74 @@ def get_admin_stats():
         except Exception as e:
             # Fallback: count all users if date comparison fails
             recent_signups = 0
-            print(f"Error counting recent signups: {e}")
         
-        # Get signups over time (last 30 days)
+        # Get signups over time (last 30 days) - optimized with aggregation
         try:
             thirty_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+            # Use aggregation for better performance
+            signup_pipeline = [
+                {'$match': {'created_at': {'$gte': thirty_days_ago}}},
+                {'$project': {
+                    'date': {
+                        '$dateToString': {
+                            'format': '%Y-%m-%d',
+                            'date': {
+                                '$cond': {
+                                    'if': {'$eq': [{'$type': '$created_at'}, 'string']},
+                                    'then': {'$dateFromString': {'dateString': '$created_at'}},
+                                    'else': '$created_at'
+                                }
+                            }
+                        }
+                    }
+                }},
+                {'$group': {'_id': '$date', 'count': {'$sum': 1}}},
+                {'$sort': {'_id': 1}}
+            ]
             signups_by_day = {}
-            for user in users.find({'created_at': {'$gte': thirty_days_ago}}):
-                created_at = user.get('created_at')
-                if created_at:
-                    # Handle both datetime objects and strings
-                    if isinstance(created_at, str):
-                        try:
-                            created_at = datetime.datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        except:
-                            continue
-                    elif hasattr(created_at, 'strftime'):
-                        # It's already a datetime object
-                        pass
-                    else:
-                        continue
-                    date_str = created_at.strftime('%Y-%m-%d')
-                    signups_by_day[date_str] = signups_by_day.get(date_str, 0) + 1
+            for result in users.aggregate(signup_pipeline):
+                signups_by_day[result['_id']] = result['count']
         except Exception as e:
             signups_by_day = {}
-            print(f"Error getting signups by day: {e}")
+            current_app.logger.warning(f"Error getting signups by day: {e}")
         
-        # Calculate active users (users who logged meals in last 7 days)
-        active_users = len(daily_meals.distinct('userId', {'date': {'$gte': (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%d')}}))
+        # Calculate active users (currently registered users, not deleted)
+        # Since users are hard-deleted, active users = all users currently in the database
+        active_users = total_users
+        # Ensure active users never exceeds total users
+        active_users = min(active_users, total_users)
         
         # Calculate average meals per user
         total_meals_docs = daily_meals.count_documents({})
         avg_meals_per_user = round(total_meals_docs / max(total_users, 1), 2)
         
-        # Calculate total calories logged
-        total_calories = 0
-        for meal_doc in daily_meals.find({}):
-            meals_list = meal_doc.get('meals', [])
-            total_calories += sum(m.get('totalCalories', 0) for m in meals_list)
+        # Calculate total calories logged using aggregation (much faster)
+        calories_pipeline = [
+            {'$unwind': '$meals'},
+            {'$group': {
+                '_id': None,
+                'total_calories': {'$sum': '$meals.totalCalories'}
+            }}
+        ]
+        calories_result = list(daily_meals.aggregate(calories_pipeline))
+        total_calories = calories_result[0]['total_calories'] if calories_result else 0
         
-        # Calculate total activity
-        total_exercises = 0
-        total_calories_burned = 0
-        for activity_doc in daily_activity.find({}):
-            activity_data = activity_doc.get('activity', {})
-            exercises = activity_data.get('exercises', [])
-            total_exercises += len(exercises)
-            total_calories_burned += sum(e.get('caloriesBurned', 0) for e in exercises)
+        # Calculate total activity using aggregation
+        activity_pipeline = [
+            {'$unwind': '$activity.exercises'},
+            {'$group': {
+                '_id': None,
+                'total_exercises': {'$sum': 1},
+                'total_calories_burned': {'$sum': '$activity.exercises.caloriesBurned'}
+            }}
+        ]
+        activity_result = list(daily_activity.aggregate(activity_pipeline))
+        total_exercises = activity_result[0]['total_exercises'] if activity_result else 0
+        total_calories_burned = activity_result[0]['total_calories_burned'] if activity_result else 0
         
         # Get user engagement metrics
         users_with_meals = len(daily_meals.distinct('userId'))
         users_with_activity = len(daily_activity.distinct('userId'))
-        engagement_rate = round((users_with_meals / max(total_users, 1)) * 100, 2)
         
         # Get daily activity trends (last 7 days)
         daily_activity_trend = {}
@@ -500,7 +516,6 @@ def get_admin_stats():
                 'total_calories_burned': total_calories_burned,
                 'users_with_meals': users_with_meals,
                 'users_with_activity': users_with_activity,
-                'engagement_rate': engagement_rate,
                 'signups_by_day': signups_by_day,
                 'daily_activity_trend': daily_activity_trend
             }
@@ -638,25 +653,45 @@ def get_admin_logs():
         skip = (page - 1) * limit
         total = admin_logs.count_documents(query)
         
+        # Fetch logs first
+        logs_cursor = admin_logs.find(query).skip(skip).limit(limit).sort('timestamp', -1)
         logs_list = []
-        for log in admin_logs.find(query).skip(skip).limit(limit).sort('timestamp', -1):
-            # Get admin name
-            admin_name = 'Unknown'
-            admin_email = 'Unknown'
-            try:
-                admin_oid = ObjectId(log.get('admin_id'))
-                admin_user = current_app.mongo_db.users.find_one({'_id': admin_oid})
-                if admin_user:
-                    admin_name = admin_user.get('name', 'Unknown')
-                    admin_email = admin_user.get('email', 'Unknown')
-            except:
-                pass
+        
+        # Collect all admin IDs to fetch in one query
+        admin_ids = set()
+        logs_temp = []
+        for log in logs_cursor:
+            admin_id = log.get('admin_id')
+            if admin_id:
+                try:
+                    admin_ids.add(ObjectId(admin_id))
+                except:
+                    pass
+            logs_temp.append(log)
+        
+        # Fetch all admin users in one query
+        admin_users = {}
+        if admin_ids:
+            users_cursor = current_app.mongo_db.users.find(
+                {'_id': {'$in': list(admin_ids)}},
+                {'name': 1, 'email': 1}
+            )
+            for user in users_cursor:
+                admin_users[str(user['_id'])] = {
+                    'name': user.get('name', 'Unknown'),
+                    'email': user.get('email', 'Unknown')
+                }
+        
+        # Build response with cached admin info
+        for log in logs_temp:
+            admin_id = log.get('admin_id')
+            admin_info = admin_users.get(admin_id, {'name': 'Unknown', 'email': 'Unknown'})
             
             logs_list.append({
                 'id': str(log.get('_id')),
-                'admin_id': log.get('admin_id'),
-                'admin_name': admin_name,
-                'admin_email': admin_email,
+                'admin_id': admin_id,
+                'admin_name': admin_info['name'],
+                'admin_email': admin_info['email'],
                 'action': log.get('action'),
                 'details': log.get('details', {}),
                 'timestamp': log.get('timestamp').isoformat() if log.get('timestamp') else None,

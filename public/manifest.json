@@ -1,0 +1,27 @@
+{
+  "name": "NutriLens - AI Nutrition Tracker",
+  "short_name": "NutriLens",
+  "description": "AI-powered nutrition tracking with photo analysis and personalized coaching",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#10b981",
+  "orientation": "portrait-primary",
+  "categories": ["health", "lifestyle", "food"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Add Meal",
+      "short_name": "Add Meal",
+      "description": "Quickly add a meal",
+      "url": "/tracker"
+    },
+    {
+      "name": "Chat",
+      "short_name": "Chat",
+      "description": "Talk to AI nutritionist",
+      "url": "/chat"
+    }
+  ]
+}
+

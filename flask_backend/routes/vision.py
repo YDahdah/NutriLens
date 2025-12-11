@@ -31,6 +31,23 @@ def _format_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     items = payload.get('items')
     if not isinstance(items, list):
         items = []
+    
+    # Validate and ensure all items have required nutritional fields with defaults
+    validated_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        validated_item = {
+            'name': item.get('name', ''),
+            'confidence': float(item.get('confidence', 0.5)),
+            'calories': float(item.get('calories', 0)),
+            'protein': float(item.get('protein', 0)),
+            'carbs': float(item.get('carbs', 0)),
+            'fat': float(item.get('fat', 0)),
+            'fiber': float(item.get('fiber', 0))
+        }
+        validated_items.append(validated_item)
+    items = validated_items
 
     recipe = payload.get('recipe')
     if recipe is not None and not isinstance(recipe, dict):
@@ -43,6 +60,26 @@ def _format_response(payload: Dict[str, Any]) -> Dict[str, Any]:
     dish_name = payload.get('dish_name')
     if dish_name is not None and not isinstance(dish_name, str):
         dish_name = None
+    # Also treat empty strings as None
+    if dish_name is not None and (not dish_name.strip() or dish_name.strip().lower() == 'null'):
+        dish_name = None
+    
+    # If no dish_name but we have items, try to infer a simple dish name from the first item
+    if dish_name is None and items and len(items) > 0:
+        first_item = items[0] if isinstance(items, list) else None
+        if first_item and isinstance(first_item, dict):
+            first_item_name = first_item.get('name', '')
+            if first_item_name:
+                # Extract simple name (remove descriptions in parentheses, take first 2 words)
+                cleaned_name = first_item_name.split('(')[0].strip()
+                words = cleaned_name.split()
+                if len(words) >= 2:
+                    dish_name = f"{words[0]} {words[1]}"
+                elif len(words) == 1:
+                    dish_name = words[0]
+                # Only use if it's a reasonable length (not a long description)
+                if dish_name and len(dish_name) > 30:
+                    dish_name = None
 
     return {
         'dish_name': dish_name,
@@ -102,26 +139,6 @@ def analyze_photo():
     max_tokens = int(current_app.config.get('VISION_MAX_TOKENS', 1000))
     frontend_url = current_app.config.get('FRONTEND_URL', 'http://localhost:5173')
 
-    if not api_key:
-        return jsonify({
-            'success': True,
-            'data': {
-                'items': [
-                    {'name': 'lettuce', 'confidence': 0.9, 'calories': 10},
-                    {'name': 'tomatoes', 'confidence': 0.9, 'calories': 25},
-                    {'name': 'cucumbers', 'confidence': 0.8, 'calories': 15},
-                    {'name': 'olive oil dressing', 'confidence': 0.7, 'calories': 80},
-                ],
-                'recipe': {
-                    'title': 'Simple Mixed Salad',
-                    'ingredients': ['lettuce', 'tomato', 'cucumber', 'olive oil', 'lemon'],
-                    'instructions': ['Chop veggies', 'Dress with oil and lemon', 'Season and serve'],
-                    'estimatedCalories': 130,
-                },
-                'summary': 'Vision service API key not set. Returning a placeholder estimate with individual food items.'
-            }
-        }), 200
-
     try:
         image_bytes = file.read()
         image_size = len(image_bytes)
@@ -155,13 +172,29 @@ def analyze_photo():
                                 "REQUIREMENTS:\n"
                                 "1. Look at the image carefully and identify EVERY distinct food item you can see\n"
                                 "2. Create a separate entry in the 'items' array for EACH food item\n"
-                                "3. Each item must have: name (specific food name), confidence (0-1), and calories (estimated for the portion shown)\n"
+                                "3. Each item MUST have the following nutritional information:\n"
+                                "   - name: specific food name (e.g., 'Grilled chicken breast', 'Lettuce leaves')\n"
+                                "   - confidence: 0-1 (how confident you are in identifying this item)\n"
+                                "   - calories: estimated calories for the visible portion\n"
+                                "   - protein: estimated protein in grams for the visible portion\n"
+                                "   - carbs: estimated carbohydrates in grams for the visible portion\n"
+                                "   - fat: estimated fat in grams for the visible portion\n"
+                                "   - fiber: estimated fiber in grams for the visible portion\n"
                                 "4. Examples:\n"
                                 "   - If you see a salad with lettuce, tomatoes, cucumbers, and chicken: create 4 separate items\n"
                                 "   - If you see rice, chicken, and broccoli: create 3 separate items\n"
                                 "   - If you see a pizza with pepperoni, cheese, and crust: create separate items for each component\n"
                                 "\n"
-                                "Use the JSON schema: {is_food_image: boolean, reason: string, items: [{name: string, confidence: number, calories: number}], recipe: {...}, summary: string}\n"
+                                "IMPORTANT - DISH NAME:\n"
+                                "If the image shows a recognizable meal or dish (like 'Hamburger', 'Caesar Salad', 'Grilled Chicken', 'Pizza', etc.), "
+                                "you MUST include a 'dish_name' field with a simple, concise name for the overall meal/dish. "
+                                "The dish_name should be 1-3 words maximum (e.g., 'Hamburger', 'Grilled Chicken', 'Caesar Salad'). "
+                                "If it's just individual food items without a specific dish, set dish_name to null.\n"
+                                "\n"
+                                "Use the JSON schema: {is_food_image: boolean, reason: string, dish_name: string|null, items: [{name: string, confidence: number, calories: number, protein: number, carbs: number, fat: number, fiber: number}], recipe: {...}, summary: string}\n"
+                                "IMPORTANT - SUMMARY FIELD:\n"
+                                "The 'summary' field should be a brief, one-sentence description of the meal (e.g., 'A grilled chicken meal with vegetables and bread'). "
+                                "DO NOT list individual components or detailed descriptions. Keep it concise and simple.\n"
                                 "Set is_food_image to false if the image is not primarily food-related."
                             ),
                         },
@@ -442,16 +475,20 @@ def analyze_photo():
                                         'success': False, 
                                         'message': f'OpenRouter API error: {api_message}'
                                     }), 400
+                            # Ensure last_error_code is valid (should be, but be safe)
+                            status_code = last_error_code if last_error_code else 502
                             return jsonify({
                                 'success': False, 
                                 'message': api_message
-                            }), last_error_code
+                            }), status_code
                 except Exception:
                     pass
+                # Ensure we have a valid status code
+                status_code = last_error_code if last_error_code else 502
                 return jsonify({
                     'success': False, 
-                    'message': f'Vision service HTTP error: {last_error_code}'
-                }), last_error_code
+                    'message': f'Vision service HTTP error: {last_error_code or "Unknown"}'
+                }), status_code
             raise urllib_error.URLError(last_error.reason if last_error else 'Vision API request failed')
 
         choices = result.get('choices', [])
@@ -486,6 +523,10 @@ def analyze_photo():
                 if end > start:
                     json_text = output_text[start:end].strip()
             
+            # Validate json_text is not empty after extraction
+            if not json_text or not json_text.strip():
+                return jsonify({'success': False, 'message': 'Vision model returned empty JSON content.'}), 502
+            
             # Try to find JSON object in the text
             if '{' in json_text and '}' in json_text:
                 start_idx = json_text.find('{')
@@ -493,45 +534,162 @@ def analyze_photo():
                 if end_idx > start_idx:
                     json_text = json_text[start_idx:end_idx]
             
+            # Validate json_text after extraction
+            if not json_text or not json_text.strip():
+                return jsonify({'success': False, 'message': 'Vision model returned invalid JSON structure.'}), 502
+            
             # Try to fix common JSON errors
             # Remove trailing commas before closing braces/brackets
             json_text = re.sub(r',(\s*[}\]])', r'\1', json_text)
             
+            # Fix missing commas between array/object items
+            json_text = re.sub(r'}\s*{', r'},{', json_text)  # Objects
+            json_text = re.sub(r']\s*\[', r'],[', json_text)  # Arrays
+            json_text = re.sub(r'"\s*"', r'","', json_text)  # String values
+            
+            # Fix unclosed strings (add closing quote if missing)
+            # This is a simple heuristic - look for unclosed quotes
+            quote_count = json_text.count('"')
+            if quote_count % 2 != 0:
+                # Odd number of quotes - might have unclosed string
+                # Try to find the last unclosed quote and close it
+                last_quote_pos = json_text.rfind('"')
+                if last_quote_pos > 0:
+                    # Check if it's likely an unclosed string (followed by comma, brace, or bracket)
+                    next_char_pos = last_quote_pos + 1
+                    if next_char_pos < len(json_text):
+                        next_char = json_text[next_char_pos]
+                        if next_char not in ['"', ',', '}', ']', ':', '\n', '\r', ' ']:
+                            # Likely unclosed - try to fix by inserting quote before problematic char
+                            json_text = json_text[:next_char_pos] + '"' + json_text[next_char_pos:]
+            
             # Try parsing
             parsed = json.loads(json_text)
+            json_parsed_successfully = True
         except json.JSONDecodeError as e:
+            json_parsed_successfully = False
             # Log the actual response for debugging (more context)
             error_pos = getattr(e, 'pos', None)
-            if error_pos:
+            # Ensure json_text is defined and not empty for error handling
+            if not json_text:
+                json_text = output_text
+            if error_pos is not None and json_text:
                 start_debug = max(0, error_pos - 100)
                 end_debug = min(len(json_text), error_pos + 100)
                 debug_snippet = json_text[start_debug:end_debug]
                 current_app.logger.error(f'Vision model JSON parse error at position {error_pos}. Snippet: {debug_snippet}')
             else:
-                current_app.logger.error(f'Vision model JSON parse error. Response: {output_text[:1000]}')
+                current_app.logger.error(f'Vision model JSON parse error. Response: {output_text[:1000] if output_text else "Empty"}')
             
             # Try to extract a valid JSON subset if possible
             try:
-                # Find the first complete JSON object
-                brace_count = 0
-                start_pos = json_text.find('{')
-                if start_pos >= 0:
-                    for i in range(start_pos, len(json_text)):
-                        if json_text[i] == '{':
-                            brace_count += 1
-                        elif json_text[i] == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                # Found complete object
-                                subset_json = json_text[start_pos:i+1]
-                                parsed = json.loads(subset_json)
-                                current_app.logger.info('Successfully parsed JSON subset after error')
-                                break
-                    else:
-                        raise json.JSONDecodeError("Could not find complete JSON object", json_text, len(json_text))
-                else:
-                    raise json.JSONDecodeError("No JSON object found", json_text, 0)
+                # Ensure json_text is available
+                if not json_text:
+                    json_text = output_text
+                
+                # More aggressive JSON fixing
+                # Try to fix the error at the specific position
+                error_pos = getattr(e, 'pos', None)
+                if error_pos is not None and error_pos < len(json_text):
+                    # Try to fix common issues at error position
+                    fixed_json = json_text
+                    
+                    # If error is about expecting comma, try to insert one
+                    if 'Expecting' in str(e) and 'delimiter' in str(e):
+                        # Find the position and try to insert comma
+                        pos = error_pos
+                        # Look backwards for the last valid character
+                        for i in range(pos - 1, max(0, pos - 50), -1):
+                            if fixed_json[i] in ['"', '}', ']', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
+                                # Check if comma is missing
+                                next_non_whitespace = pos
+                                while next_non_whitespace < len(fixed_json) and fixed_json[next_non_whitespace] in [' ', '\n', '\r', '\t']:
+                                    next_non_whitespace += 1
+                                if next_non_whitespace < len(fixed_json) and fixed_json[next_non_whitespace] not in [',', '}', ']']:
+                                    # Insert comma
+                                    fixed_json = fixed_json[:next_non_whitespace] + ',' + fixed_json[next_non_whitespace:]
+                                    try:
+                                        parsed = json.loads(fixed_json)
+                                        current_app.logger.info('Successfully fixed JSON by inserting comma')
+                                        json_text = fixed_json
+                                        json_parsed_successfully = True
+                                        break
+                                    except json.JSONDecodeError:
+                                        # Didn't work, try next approach
+                                        fixed_json = json_text
+                    
+                    # Try to extract complete JSON object by finding matching braces
+                    if not json_parsed_successfully:
+                        brace_count = 0
+                        start_pos = fixed_json.find('{')
+                        if start_pos >= 0:
+                            in_string = False
+                            escape_next = False
+                            for i in range(start_pos, len(fixed_json)):
+                                char = fixed_json[i]
+                                if escape_next:
+                                    escape_next = False
+                                    continue
+                                if char == '\\':
+                                    escape_next = True
+                                    continue
+                                if char == '"':
+                                    in_string = not in_string
+                                    continue
+                                if not in_string:
+                                    if char == '{':
+                                        brace_count += 1
+                                    elif char == '}':
+                                        brace_count -= 1
+                                        if brace_count == 0:
+                                            # Found complete object
+                                            subset_json = fixed_json[start_pos:i+1]
+                                            # Clean up the subset
+                                            subset_json = re.sub(r',(\s*[}\]])', r'\1', subset_json)
+                                    try:
+                                        parsed = json.loads(subset_json)
+                                        current_app.logger.info('Successfully parsed JSON subset after error')
+                                        json_text = subset_json
+                                        json_parsed_successfully = True
+                                        break
+                                    except json.JSONDecodeError:
+                                        # Try one more time with more aggressive cleaning
+                                        subset_json = re.sub(r',+', ',', subset_json)  # Remove duplicate commas
+                                        subset_json = re.sub(r',(\s*[}\]])', r'\1', subset_json)
+                                        try:
+                                            parsed = json.loads(subset_json)
+                                            current_app.logger.info('Successfully parsed JSON subset after aggressive cleaning')
+                                            json_text = subset_json
+                                            json_parsed_successfully = True
+                                            break
+                                        except json.JSONDecodeError:
+                                            pass
+                            else:
+                                # Couldn't find complete object, try to truncate at error position
+                                if error_pos and error_pos > 100:
+                                    truncated = fixed_json[:error_pos]
+                                    # Try to close any open structures
+                                    open_braces = truncated.count('{') - truncated.count('}')
+                                    open_brackets = truncated.count('[') - truncated.count(']')
+                                    truncated += '}' * open_braces + ']' * open_brackets
+                                    try:
+                                        parsed = json.loads(truncated)
+                                        current_app.logger.info('Successfully parsed truncated JSON')
+                                        json_text = truncated
+                                        json_parsed_successfully = True
+                                    except json.JSONDecodeError:
+                                        raise json.JSONDecodeError("Could not find complete JSON object", json_text, len(json_text))
+                                else:
+                                    raise json.JSONDecodeError("Could not find complete JSON object", json_text, len(json_text))
+                        else:
+                            raise json.JSONDecodeError("No JSON object found", json_text, 0)
+                
+                # If we still don't have parsed, raise error
+                if not json_parsed_successfully:
+                    raise json.JSONDecodeError("Could not parse JSON", json_text, error_pos if error_pos else 0)
+                    
             except (json.JSONDecodeError, Exception) as fallback_error:
+                current_app.logger.error(f'All JSON parsing attempts failed. Original error: {str(e)}, Fallback error: {str(fallback_error)}')
                 return jsonify({
                     'success': False, 
                     'message': f'Vision model returned invalid JSON. Please try again or use a different model. Error: {str(e)}'
@@ -541,11 +699,52 @@ def analyze_photo():
         if not isinstance(is_food_image, bool):
             return jsonify({'success': False, 'message': 'Vision model response missing is_food_image flag.'}), 502
 
-        if not is_food_image:
-            reason = parsed.get('reason')
-            if not isinstance(reason, str) or not reason.strip():
-                reason = 'The uploaded image does not appear to contain food.'
-            return jsonify({'success': False, 'message': reason}), 400
+        # Check if items were detected - if so, treat as food even if is_food_image is False
+        items = parsed.get('items', [])
+        has_detected_items = isinstance(items, list) and len(items) > 0
+        
+        # Be very lenient: only reject if explicitly stated as non-food
+        # Allow unclear/blurry images to pass through - they might still contain food
+        if not is_food_image and not has_detected_items:
+            reason = parsed.get('reason', '')
+            reason_lower = reason.lower() if isinstance(reason, str) else ''
+            
+            # Only reject if the reason explicitly and clearly indicates it's NOT food
+            # Keywords that mean "definitely not food"
+            explicit_non_food_keywords = [
+                'no food', 'not food', 'not a food', 'not contain food', 
+                'non-food', 'not edible', 'not consumable', 'contains no food',
+                'empty plate', 'no meal', 'not a meal'
+            ]
+            
+            # Check if reason explicitly says it's not food
+            should_reject = any(keyword in reason_lower for keyword in explicit_non_food_keywords)
+            
+            # Also check if reason is empty or generic - in that case, be lenient and allow it
+            if not reason or not reason.strip():
+                should_reject = False  # No reason given - be lenient
+            
+            if should_reject:
+                if not isinstance(reason, str) or not reason.strip():
+                    reason = 'The uploaded image does not appear to contain food.'
+                current_app.logger.warning(f'Rejecting image: Explicitly not a food image. Reason: {reason[:200] if reason else "non-food indicators detected"}')
+                return jsonify({
+                    'success': False,
+                    'error_type': 'unclear_food',
+                    'message': '🍽️ Oops! We couldn\'t find any food in this image.\n\nPlease upload a clear photo of your meal with food items visible. Make sure the image is well-lit and shows the food clearly.',
+                    'status_code': 400
+                }), 400
+            else:
+                # Image is unclear/blurry/wrapped but might still be food - allow it through
+                # Return empty items but don't reject - let user see the result
+                current_app.logger.info(f'Accepting unclear image - may contain food. Reason: {reason[:200] if reason else "unclear but potentially food"}')
+                # Continue processing - will return empty items array
+        
+        # If items were detected but is_food_image is False, override it
+        if has_detected_items and not is_food_image:
+            current_app.logger.info(f'Overriding is_food_image=False because {len(items)} items were detected')
+            is_food_image = True
+            parsed['is_food_image'] = True
 
         response_payload = _format_response(parsed)
         return jsonify({'success': True, 'data': response_payload}), 200

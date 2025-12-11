@@ -2,11 +2,16 @@ import { useState, useRef, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 import { Camera, Upload, X, Loader2, UtensilsCrossed, Plus, RefreshCw, Clock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import { VisionService, VisionResult } from "@/services/VisionService";
 import { apiClient } from "@/utils/apiClient";
+import { STORAGE_KEYS } from "@/config/constants";
+import { AppError } from "@/utils/errors";
+import { logger } from "@/utils/logger";
 
 interface PhotoAnalyzerProps {
   isOpen: boolean;
@@ -22,6 +27,7 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [rateLimitUntil, setRateLimitUntil] = useState<number | null>(null);
   const [retryCountdown, setRetryCountdown] = useState<number>(0);
+  const [selectedMealType, setSelectedMealType] = useState<string>('breakfast');
   const { toast } = useToast();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -135,6 +141,7 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
     setPhotoPreview(null);
     setResult(null);
     setErrorMessage(null);
+    setSelectedMealType('breakfast');
     setShowOptions(true);
     stopCamera();
     onClose();
@@ -172,10 +179,6 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
         message += `Total estimated calories: ~${totalCalories} kcal\n\n`;
       }
       
-      if (analysisResult.summary) {
-        message += `Summary: ${analysisResult.summary}\n\n`;
-      }
-      
       message += `Please provide detailed nutritional insights about this meal, including:\n`;
       message += `- Overall nutritional value\n`;
       message += `- Health benefits of the main ingredients\n`;
@@ -188,7 +191,7 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
         imagePreview: imagePreview,
         analysisResult: analysisResult
       };
-      sessionStorage.setItem('photoAnalysisForChat', JSON.stringify(chatData));
+      sessionStorage.setItem(STORAGE_KEYS.PHOTO_ANALYSIS_FOR_CHAT, JSON.stringify(chatData));
       
       // Navigate to chat page
       onClose();
@@ -199,7 +202,7 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
         description: "Your meal analysis is being sent to the AI nutritionist for detailed insights.",
       });
     } catch (error: any) {
-      console.error('Error sending to AI chat:', error);
+      logger.error('Error sending to AI chat:', error);
       toast({
         title: "Error",
         description: "Could not send to AI chat. You can manually copy the analysis.",
@@ -299,19 +302,45 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
               </div>
               
               {errorMessage && (
-                <Alert variant="destructive">
+                <Alert variant={errorMessage.toLowerCase().includes('rate limit') || errorMessage.toLowerCase().includes('daily free model limit') ? "destructive" : "default"} className={errorMessage.toLowerCase().includes("couldn't find any food") || errorMessage.toLowerCase().includes('not appear to contain food') ? "border-amber-200 bg-amber-50" : ""}>
                   {(errorMessage.toLowerCase().includes('rate limit') || errorMessage.toLowerCase().includes('daily free model limit')) ? (
                     <Clock className="h-4 w-4" />
+                  ) : (errorMessage.toLowerCase().includes("couldn't find any food") || errorMessage.toLowerCase().includes('not appear to contain food')) ? (
+                    <UtensilsCrossed className="h-5 w-5 text-amber-600" />
                   ) : (
                     <UtensilsCrossed className="h-4 w-4" />
                   )}
                   <AlertTitle className="flex items-center gap-2">
                     {(errorMessage.toLowerCase().includes('rate limit') || errorMessage.toLowerCase().includes('daily free model limit')) 
                       ? 'Rate Limit Reached' 
+                      : (errorMessage.toLowerCase().includes("couldn't find any food") || errorMessage.toLowerCase().includes('not appear to contain food'))
+                      ? '🍽️ No Food Detected'
                       : 'Error'}
                   </AlertTitle>
                   <AlertDescription>
-                    <div className="whitespace-pre-wrap text-sm">{errorMessage}</div>
+                    <div className="whitespace-pre-wrap text-sm">
+                      {(errorMessage.toLowerCase().includes("couldn't find any food") || errorMessage.toLowerCase().includes('not appear to contain food')) ? (
+                        <div className="space-y-2">
+                          <p className="text-amber-800 font-medium">
+                            We couldn't find any food in this image.
+                          </p>
+                          <p className="text-amber-700 text-sm">
+                            Please upload a clear photo of your meal with food items visible. Make sure the image is well-lit and shows the food clearly.
+                          </p>
+                          <div className="mt-3 pt-3 border-t border-amber-200">
+                            <p className="text-xs text-amber-600 font-medium">💡 Tips for better results:</p>
+                            <ul className="text-xs text-amber-700 mt-1 space-y-1 list-disc list-inside">
+                              <li>Ensure food items are clearly visible</li>
+                              <li>Use good lighting</li>
+                              <li>Avoid blurry or dark images</li>
+                              <li>Make sure food isn't wrapped or hidden</li>
+                            </ul>
+                          </div>
+                        </div>
+                      ) : (
+                        errorMessage
+                      )}
+                    </div>
                     {(errorMessage.toLowerCase().includes('rate limit') || errorMessage.toLowerCase().includes('daily free model limit') || errorMessage.toLowerCase().includes('too many requests')) && (retryCountdown > 0 || rateLimitUntil !== null) && (
                       <div className="mt-3 pt-3 border-t border-destructive/20">
                         <p className="text-xs text-muted-foreground mb-2">
@@ -334,13 +363,12 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
                               );
                               toast({
                                 title: "Analysis Complete",
-                                description: total ? `Estimated total: ~${total} kcal. Sending to AI for detailed insights...` : "Detected items updated. Sending to AI...",
+                                description: total ? `Estimated total: ~${total} kcal. Analysis complete!` : "Detected items updated.",
                               });
-                              setTimeout(async () => {
-                                await sendToAIChat(r, photoPreview);
-                              }, 1000);
+                              // Removed automatic redirect to chatbot - user can manually send to chat if desired
                             } catch (e: any) {
-                              const errorMsg = e?.message || "Unable to analyze photo. Please try again.";
+                              // Use userMessage from AppError if available, otherwise fall back to message
+                              const errorMsg = (e instanceof AppError ? e.userMessage : e?.message) || "Unable to analyze photo. Please try again.";
                               setErrorMessage(errorMsg);
                             } finally {
                               setIsAnalyzing(false);
@@ -362,11 +390,6 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
                           )}
                         </Button>
                       </div>
-                    )}
-                    {!errorMessage.toLowerCase().includes('rate limit') && !errorMessage.toLowerCase().includes('daily free model limit') && (
-                      <p className="mt-2 text-sm">
-                        Please upload an image that contains food or beverages.
-                      </p>
                     )}
                   </AlertDescription>
                 </Alert>
@@ -404,12 +427,6 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
                     </div>
                   )}
                   
-                  {result.summary && (
-                    <div className="pt-3 border-t">
-                      <p className="text-sm text-gray-600 italic">{result.summary}</p>
-                    </div>
-                  )}
-                  
                   {result.recipe && (
                     <div className="pt-3 border-t">
                       <p className="font-semibold mb-2 text-gray-900">Recipe: {result.recipe.title}</p>
@@ -420,45 +437,65 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
                   )}
                   
                   {result.items && result.items.length > 0 && (
-                    <Button
-                      onClick={() => {
-                        // Store items in sessionStorage to pass to tracker
-                        const itemsToAdd = result.items.map(item => ({
-                          name: item.name,
-                          calories: item.calories || 0,
-                          // Default values for other nutrition fields
-                          protein: 0,
-                          carbs: 0,
-                          fat: 0,
-                          fiber: 0,
-                        }));
-                        const dataToStore = {
-                          items: itemsToAdd,
-                          dishName: result.dish_name || null,
-                        };
-                        
-                        sessionStorage.setItem('photoAnalyzerItems', JSON.stringify(dataToStore));
-                        
-                        // Dispatch custom event to notify tracker
-                        window.dispatchEvent(new CustomEvent('photoItemsReady'));
-                        
-                        // Small delay before navigation to ensure event is processed
-                        setTimeout(() => {
-                          onClose();
-                          navigate('/tracker');
-                        }, 100);
-                        
-                        toast({
-                          title: "Items Ready to Add",
-                          description: `Adding ${itemsToAdd.length} item(s) to your meal...`,
-                        });
-                      }}
-                      className="w-full mt-4 h-10 sm:h-11 text-sm sm:text-base font-semibold"
-                      variant="default"
-                    >
-                      <Plus className="mr-2 h-4 w-4 sm:h-5 sm:w-5" />
-                      Add to Today's Meal
-                    </Button>
+                    <div className="space-y-4 mt-4">
+                      {/* Meal Type Selection */}
+                      <div>
+                        <Label htmlFor="meal-type-select" className="block text-sm font-medium mb-2">
+                          Add to Meal
+                        </Label>
+                        <Select value={selectedMealType} onValueChange={setSelectedMealType}>
+                          <SelectTrigger id="meal-type-select" aria-label="Select meal type">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="breakfast">Breakfast</SelectItem>
+                            <SelectItem value="lunch">Lunch</SelectItem>
+                            <SelectItem value="dinner">Dinner</SelectItem>
+                            <SelectItem value="snacks">Snacks</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <Button
+                        onClick={() => {
+                          // Store items in sessionStorage to pass to tracker
+                          const itemsToAdd = result.items.map(item => ({
+                            name: item.name,
+                            calories: item.calories || 0,
+                            protein: item.protein || 0,
+                            carbs: item.carbs || 0,
+                            fat: item.fat || 0,
+                            fiber: item.fiber || 0,
+                          }));
+                          const dataToStore = {
+                            items: itemsToAdd,
+                            dishName: result.dish_name || null,
+                            mealType: selectedMealType, // Store selected meal type
+                          };
+                          
+                          sessionStorage.setItem(STORAGE_KEYS.PHOTO_ANALYZER_ITEMS, JSON.stringify(dataToStore));
+                          
+                          // Dispatch custom event to notify tracker
+                          window.dispatchEvent(new CustomEvent('photoItemsReady'));
+                          
+                          // Small delay before navigation to ensure event is processed
+                          setTimeout(() => {
+                            onClose();
+                            navigate('/tracker');
+                          }, 100);
+                          
+                          toast({
+                            title: "Item Ready to Add",
+                            description: `Adding ${result.dish_name || 'meal'} to ${selectedMealType}...`,
+                          });
+                        }}
+                        className="w-full h-10 sm:h-11 text-sm sm:text-base font-semibold"
+                        variant="default"
+                      >
+                        <Plus className="mr-2 h-4 w-4 sm:h-5 sm:w-5" />
+                        Add to {selectedMealType.charAt(0).toUpperCase() + selectedMealType.slice(1)}
+                      </Button>
+                    </div>
                   )}
                 </div>
               )}
@@ -479,26 +516,26 @@ const PhotoAnalyzer = ({ isOpen, onClose }: PhotoAnalyzerProps) => {
                         );
                         toast({
                           title: "Analysis Complete",
-                          description: total ? `Estimated total: ~${total} kcal. Sending to AI for detailed insights...` : "Detected items updated. Sending to AI...",
+                          description: total ? `Estimated total: ~${total} kcal. Analysis complete!` : "Detected items updated.",
                         });
                         
-                        // Automatically send to AI chat for detailed analysis
-                        // Small delay to show the result briefly, then send to AI
-                        setTimeout(async () => {
-                          await sendToAIChat(r, photoPreview);
-                        }, 1000);
+                        // Removed automatic redirect to chatbot - user can manually send to chat if desired
                       } catch (e: any) {
-                        const errorMessage = e?.message || "Unable to analyze photo. Please try again.";
+                        // Use userMessage from AppError if available, otherwise fall back to message
+                        const errorMessage = (e instanceof AppError ? e.userMessage : e?.message) || "Unable to analyze photo. Please try again.";
                         
                         // Check if it's a non-food image rejection (400 status)
-                        if (e?.status === 400 || (errorMessage.toLowerCase().includes('not appear to contain food'))) {
+                        if (e?.status === 400 || (errorMessage.toLowerCase().includes('not appear to contain food') || errorMessage.toLowerCase().includes("couldn't find any food"))) {
                           setErrorMessage(errorMessage);
+                          // Extract the user-friendly message, removing emoji if present in the message itself
+                          const cleanMessage = errorMessage.replace(/🍽️\s*/, '').trim();
                           toast({
-                            title: "Non-Food Image Detected",
+                            title: "🍽️ No Food Detected",
                             description: errorMessage.includes('does not support image analysis') 
                               ? "The AI model doesn't support image analysis. Please contact support or try again later."
-                              : errorMessage || "Please upload an image that contains food or beverages.",
+                              : cleanMessage || "We couldn't find any food in this image. Please upload a clear photo of your meal with food items visible.",
                             variant: "destructive",
+                            duration: 5000,
                           });
                         } else if (e?.status === 429 || errorMessage.toLowerCase().includes('rate limit') || errorMessage.toLowerCase().includes('daily free model limit') || errorMessage.toLowerCase().includes('too many requests')) {
                           // Rate limit error

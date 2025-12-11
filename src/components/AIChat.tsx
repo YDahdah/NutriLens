@@ -9,8 +9,6 @@ import {
   Bot, 
   User, 
   Loader2, 
-  Mic, 
-  MicOff, 
   Plus,
   Trash2, 
   RefreshCw,
@@ -22,11 +20,14 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { useVoiceInput } from '@/hooks/useVoiceInput';
 import { cn } from '@/lib/utils';
 import { DatabaseService } from '@/services/DatabaseService';
 import AuthModal from './AuthModal';
 import { apiClient } from '@/utils/apiClient';
+import ReactMarkdown from 'react-markdown';
+import { STORAGE_KEYS } from '@/config/constants';
+import { logger } from '@/utils/logger';
+import { AppError, ErrorCode } from '@/utils/errors';
 
 // Enhanced types for comprehensive food assistant
 interface Message {
@@ -380,7 +381,7 @@ class NutritionAIService {
       return await this.handleIntelligentFallback(input, foodName, questionType);
       
     } catch (error) {
-      console.error('Error processing user input:', error);
+      logger.error('Error processing user input:', error);
       return this.handleError(input);
     }
   }
@@ -2367,7 +2368,7 @@ class NutritionAIService {
         return this.handleFoodNotFound(foodName, questionType);
       }
     } catch (error) {
-      console.error('Error fetching food info:', error);
+      logger.error('Error fetching food info:', error);
       return this.handleFoodNotFound(foodName, questionType);
     }
   }
@@ -2584,7 +2585,7 @@ class NutritionAIService {
         return `I don't have specific information about "${foodName}" in my database. However, I can help you with general food information or nutrition advice. What would you like to know?`;
       }
     } catch (error) {
-      console.error('Error fetching food info:', error);
+      logger.error('Error fetching food info:', error);
       return `I encountered an error while fetching information about "${foodName}". Please try again or ask about a different food item.`;
     }
   }
@@ -3152,7 +3153,7 @@ For now, I can provide general nutrition advice about healthy eating!`;
       
       return response;
     } catch (error) {
-      console.error('Error fetching nutrition data:', error);
+      logger.error('Error fetching nutrition data:', error);
       return `I encountered an error while fetching nutrition data for "${foodName}". Please try again or ask about a different food item.`;
     }
   }
@@ -3809,7 +3810,7 @@ For now, I can provide general nutrition advice!`;
       
       return response;
     } catch (error) {
-      console.error('Error fetching food info:', error);
+      logger.error('Error fetching food info:', error);
       return `I encountered an error while fetching information about "${foodName}". Please try again or ask about a different food item.`;
     }
   }
@@ -3832,39 +3833,42 @@ const AIChat: React.FC = () => {
   const rateLimitUntil = useRef(0); // Timestamp when rate limit expires
   const { user, isAuthenticated } = useAuth();
   const { toast } = useToast();
-  const { isRecording, startRecording, stopRecording, transcript, error } = useVoiceInput();
 
   // Scroll functions
-  const scrollToTop = () => {
+  const checkScrollPosition = useCallback(() => {
     if (scrollAreaRef.current) {
-      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
-      if (scrollElement) {
-        scrollElement.scrollTo({ top: 0, behavior: 'smooth' });
-      }
-    }
-  };
-
-
-  const checkScrollPosition = () => {
-    if (scrollAreaRef.current) {
-      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement;
       if (scrollElement) {
         const { scrollTop, scrollHeight, clientHeight } = scrollElement;
-        setCanScrollUp(scrollTop > 0);
+        setCanScrollUp(scrollTop > 10);
         setCanScrollDown(scrollTop < scrollHeight - clientHeight - 10);
       }
     }
-  };
+  }, []);
 
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
     if (scrollAreaRef.current) {
-      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement;
       if (scrollElement) {
         scrollElement.scrollTo({ top: scrollElement.scrollHeight, behavior: 'smooth' });
+        setTimeout(checkScrollPosition, 300);
       }
     }
-  }, []);
+  }, [checkScrollPosition]);
+  
+  // Scroll to top function
+  const scrollToTop = useCallback(() => {
+    if (scrollAreaRef.current) {
+      const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement;
+      if (scrollElement) {
+        scrollElement.scrollTo({ top: 0, behavior: 'smooth' });
+        setTimeout(() => {
+          checkScrollPosition();
+        }, 300);
+      }
+    }
+  }, [checkScrollPosition]);
 
   // Helper function to send message to AI (extracted from handleSendMessage)
   const sendMessageToAI = useCallback(async (messageToSend: string, messageHistory: Message[] = messages) => {
@@ -3898,7 +3902,7 @@ const AIChat: React.FC = () => {
       const assistantContent = response?.data?.message?.trim();
 
       if (!response?.success || !assistantContent) {
-        console.error('Invalid response structure:', { 
+        logger.error('Invalid response structure:', { 
           success: response?.success, 
           hasData: !!response?.data, 
           hasMessage: !!response?.data?.message,
@@ -3920,8 +3924,8 @@ const AIChat: React.FC = () => {
       setMessages(prevMsgs => [...prevMsgs, assistantMessage]);
     })
     .catch(error => {
-      console.error('Error generating AI response:', error);
-      console.error('Error details:', {
+      logger.error('Error generating AI response:', error);
+      logger.error('Error details:', {
         message: error instanceof Error ? error.message : String(error),
         status: (error as any)?.status,
         stack: error instanceof Error ? error.stack : undefined
@@ -3956,14 +3960,16 @@ const AIChat: React.FC = () => {
       } else {
         // For other errors, still update lastRequestTime to prevent spam
         lastRequestTime.current = Date.now();
-        const errorMessage = error instanceof Error ? error.message : "Failed to get AI response. Please try again.";
         
-        // Provide user-friendly message for API key configuration errors
-        let displayMessage = errorMessage;
-        if (errorMessage.includes('Chat API key not configured')) {
+        // Use AppError for better error handling
+        const appError = error instanceof AppError ? error : AppError.fromError(error);
+        let displayMessage = appError.userMessage;
+        
+        // Provide user-friendly message for specific error types
+        if (appError.code === ErrorCode.CONNECTION_REFUSED) {
+          displayMessage = "Backend server is not running. Please start the Flask backend server on port 3001.";
+        } else if (appError.message.includes('Chat API key not configured')) {
           displayMessage = "Chat service is not configured. Please set CHAT_API_KEY environment variable in the backend and restart the server.";
-        } else if (errorMessage.includes('Failed to fetch') || errorMessage.includes('NetworkError')) {
-          displayMessage = "Network error: Unable to connect to the server. Please check your connection and ensure the backend server is running.";
         }
         
         toast({
@@ -3983,12 +3989,12 @@ const AIChat: React.FC = () => {
   useEffect(() => {
     if (!isAuthenticated) return;
     
-    const photoAnalysisData = sessionStorage.getItem('photoAnalysisForChat');
+    const photoAnalysisData = sessionStorage.getItem(STORAGE_KEYS.PHOTO_ANALYSIS_FOR_CHAT);
     if (photoAnalysisData) {
       try {
         const chatData = JSON.parse(photoAnalysisData);
         // Clear the sessionStorage immediately so it doesn't send again
-        sessionStorage.removeItem('photoAnalysisForChat');
+        sessionStorage.removeItem(STORAGE_KEYS.PHOTO_ANALYSIS_FOR_CHAT);
         
         // Wait a bit for the component to be ready, then send
         const timer = setTimeout(() => {
@@ -4013,7 +4019,7 @@ const AIChat: React.FC = () => {
         
         return () => clearTimeout(timer);
       } catch (error) {
-        console.error('Error processing photo analysis:', error);
+        logger.error('Error processing photo analysis:', error);
         toast({
           title: "Error",
           description: "Failed to process photo analysis. Please try again.",
@@ -4089,40 +4095,6 @@ const AIChat: React.FC = () => {
     }
   }, [handleSendMessage]);
 
-  // Handle voice recording
-  const handleVoiceRecording = useCallback(() => {
-    if (isRecording) {
-      stopRecording();
-      toast({
-        title: "Voice recording stopped",
-        description: "Processing your message..."
-      });
-        } else {
-      startRecording();
-      toast({
-        title: "Voice recording started",
-        description: "Speak your message..."
-      });
-    }
-  }, [isRecording, startRecording, stopRecording, toast]);
-
-  // Handle transcript updates
-  useEffect(() => {
-    if (transcript) {
-      setInputMessage(transcript);
-    }
-  }, [transcript]);
-
-  // Handle voice errors
-  useEffect(() => {
-    if (error) {
-      toast({
-        title: "Voice Error",
-        description: error,
-        variant: "destructive"
-      });
-    }
-  }, [error, toast]);
 
   // Clear conversation
   const handleClearConversation = useCallback(() => {
@@ -4137,8 +4109,38 @@ const AIChat: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
     // Check scroll position after a short delay to allow for rendering
-    setTimeout(checkScrollPosition, 100);
-  }, [messages, scrollToBottom]);
+    setTimeout(checkScrollPosition, 200);
+  }, [messages, scrollToBottom, checkScrollPosition]);
+  
+  // Add keyboard shortcuts for scrolling
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      // Ctrl/Cmd + Up/Down for scrolling
+      if ((e.ctrlKey || e.metaKey) && scrollAreaRef.current) {
+        const scrollElement = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement;
+        if (scrollElement) {
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            scrollElement.scrollBy({ top: -100, behavior: 'smooth' });
+            setTimeout(checkScrollPosition, 100);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            scrollElement.scrollBy({ top: 100, behavior: 'smooth' });
+            setTimeout(checkScrollPosition, 100);
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            scrollToTop();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            scrollToBottom();
+          }
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [scrollToTop, scrollToBottom, checkScrollPosition]);
 
   // Focus input on mount
   useEffect(() => {
@@ -4209,21 +4211,21 @@ const AIChat: React.FC = () => {
       <div className="relative flex-1 overflow-hidden">
         <ScrollArea 
           ref={scrollAreaRef} 
-          className="h-full p-4 sm:p-6 bg-transparent"
+          className="h-full p-4 sm:p-6 bg-transparent [&>[data-radix-scroll-area-viewport]]:scroll-smooth"
           onScrollCapture={checkScrollPosition}
         >
-          <div className="space-y-6">
+          <div className="space-y-4">
           {messages.map((message, index) => (
             <div
               key={message.id}
               className={cn(
-                "flex gap-4",
+                "flex gap-3 items-start",
                 message.role === 'user' ? 'justify-end' : 'justify-start'
               )}
             >
               {message.role === 'assistant' && (
-                <Avatar className="h-10 w-10 bg-green-500 text-white">
-                  <AvatarFallback className="bg-green-500 text-white">
+                <Avatar className="h-9 w-9 bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-sm flex-shrink-0">
+                  <AvatarFallback className="bg-gradient-to-br from-emerald-500 to-green-600 text-white">
                       <Bot className="h-5 w-5" />
                   </AvatarFallback>
                 </Avatar>
@@ -4231,28 +4233,117 @@ const AIChat: React.FC = () => {
               
               <div
                 className={cn(
-                  "max-w-[80%] rounded-2xl px-4 py-3 shadow-md",
+                  "max-w-[85%] sm:max-w-[75%] rounded-2xl px-6 py-5 shadow-lg transition-all duration-200",
                   message.role === 'user'
-                    ? "bg-gradient-to-br from-emerald-600 to-green-500 text-white"
-                    : "bg-white/80 dark:bg-slate-800/80 text-gray-900 dark:text-gray-100 border border-gray-200/60 dark:border-slate-700"
+                    ? "bg-gradient-to-br from-emerald-600 via-emerald-500 to-green-500 text-white"
+                    : "bg-gradient-to-br from-white to-gray-50/50 dark:from-slate-800 dark:to-slate-800/90 text-gray-900 dark:text-gray-100 border border-gray-200/80 dark:border-slate-700/60 shadow-xl hover:shadow-2xl backdrop-blur-sm"
                 )}
               >
-                <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {message.content}
-              </div>
+                {message.role === 'assistant' ? (
+                  <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-headings:font-bold prose-p:text-gray-800 dark:prose-p:text-gray-200">
+                    <ReactMarkdown
+                      remarkPlugins={[]}
+                      rehypePlugins={[]}
+                      components={{
+                        p: ({ children }) => <p className="mb-4 last:mb-0 text-gray-800 dark:text-gray-200 leading-7 text-[15px]">{children}</p>,
+                        strong: ({ children }) => <strong className="font-bold text-gray-900 dark:text-gray-100 text-emerald-700 dark:text-emerald-400">{children}</strong>,
+                        em: ({ children }) => <em className="italic text-gray-700 dark:text-gray-300">{children}</em>,
+                        h1: ({ children }) => <h1 className="text-2xl font-bold mb-4 mt-6 first:mt-0 text-gray-900 dark:text-gray-100 border-b-2 border-emerald-200 dark:border-emerald-800 pb-3 bg-gradient-to-r from-emerald-50 to-transparent dark:from-emerald-950/30 dark:to-transparent px-3 -mx-3 rounded-t">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-xl font-bold mb-3 mt-5 first:mt-0 text-gray-900 dark:text-gray-100 text-emerald-700 dark:text-emerald-400">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-lg font-semibold mb-2.5 mt-4 first:mt-0 text-gray-900 dark:text-gray-100">{children}</h3>,
+                        ul: ({ children }) => <ul className="list-disc list-outside mb-4 space-y-2 ml-5 text-gray-800 dark:text-gray-200 marker:text-emerald-500 dark:marker:text-emerald-400">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal list-outside mb-4 space-y-2 ml-5 text-gray-800 dark:text-gray-200 marker:text-emerald-500 dark:marker:text-emerald-400 marker:font-bold">{children}</ol>,
+                        li: ({ children }) => <li className="text-gray-800 dark:text-gray-200 leading-7 text-[15px] pl-1">{children}</li>,
+                        table: ({ children }) => (
+                          <div className="overflow-x-auto my-5 rounded-xl border-2 border-gray-200 dark:border-gray-700 shadow-lg bg-white dark:bg-slate-800/50">
+                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                              {children}
+                            </table>
+                          </div>
+                        ),
+                        thead: ({ children }) => <thead className="bg-gradient-to-r from-emerald-500 to-emerald-600 dark:from-emerald-700 dark:to-emerald-800">{children}</thead>,
+                        tbody: ({ children }) => <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">{children}</tbody>,
+                        tr: ({ children }) => {
+                          // Filter out separator rows (rows with only dashes, pipes, colons, and spaces)
+                          try {
+                            const childrenArray = React.Children.toArray(children);
+                            const isSeparatorRow = childrenArray.length > 0 && childrenArray.every((child: any) => {
+                              const childText = typeof child === 'string' 
+                                ? child 
+                                : child?.props?.children 
+                                  ? String(child.props.children) 
+                                  : '';
+                              const text = String(childText).trim();
+                              return /^[\s|:\-]+$/.test(text) || text === '';
+                            });
+                            if (isSeparatorRow) return null;
+                          } catch (e) {
+                            // If error checking, just render normally
+                          }
+                          return <tr className="hover:bg-emerald-50/50 dark:hover:bg-emerald-900/20 transition-colors duration-150">{children}</tr>;
+                        },
+                        th: ({ children }) => <th className="px-5 py-4 text-left text-xs font-bold text-white uppercase tracking-wider">{children}</th>,
+                        td: ({ children }) => <td className="px-5 py-3.5 text-sm text-gray-900 dark:text-gray-100 font-medium">{children}</td>,
+                        code: ({ children, className }) => {
+                          const isInline = !className;
+                          return isInline ? (
+                            <code className="bg-emerald-100 dark:bg-emerald-900/40 px-2 py-1 rounded-md text-xs font-mono text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-semibold">{children}</code>
+                          ) : (
+                            <code className={className}>{children}</code>
+                          );
+                        },
+                        pre: ({ children }) => (
+                          <pre className="bg-gradient-to-br from-gray-900 to-gray-800 dark:from-gray-950 dark:to-gray-900 p-5 rounded-xl overflow-x-auto my-4 border-2 border-gray-700 dark:border-gray-600 shadow-inner">
+                            {children}
+                          </pre>
+                        ),
+                        blockquote: ({ children }) => (
+                          <blockquote className="border-l-4 border-emerald-500 dark:border-emerald-400 pl-5 italic my-4 text-gray-700 dark:text-gray-300 bg-gradient-to-r from-emerald-50 to-emerald-50/50 dark:from-emerald-950/40 dark:to-emerald-950/20 py-3 rounded-r-lg shadow-sm">
+                            {children}
+                          </blockquote>
+                        ),
+                        hr: () => <hr className="my-5 border-t-2 border-gray-300 dark:border-gray-600" />,
+                        a: ({ children, href }) => (
+                          <a href={href} className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 underline underline-offset-3 font-medium transition-colors" target="_blank" rel="noopener noreferrer">
+                            {children}
+                          </a>
+                        ),
+                      }}
+                    >
+                      {message.content
+                        // Remove markdown table separator rows (lines with only dashes, pipes, colons, and spaces)
+                        .replace(/^\|[\s|:\-]+\|[\s|:\-]*\|[\s|:\-]*\|[\s|:\-]*$/gm, '')
+                        .replace(/^\|[\s|:\-]+\|[\s|:\-]*\|[\s|:\-]*$/gm, '')
+                        .replace(/^\|[\s|:\-]+\|[\s|:\-]*$/gm, '')
+                        .replace(/^\|[\s|:\-]+\|$/gm, '')
+                        // Remove lines that are just separator patterns
+                        .replace(/^[\s|:\-]+$/gm, '')
+                      }
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed text-white font-medium">
+                    {message.content}
+                  </div>
+                )}
               
                 <div className={cn(
-                  "text-xs mt-2 flex items-center gap-1",
-                  message.role === 'user' ? 'text-green-100' : 'text-gray-500 dark:text-gray-400'
+                  "text-xs mt-4 flex items-center gap-2",
+                  message.role === 'user' 
+                    ? 'text-emerald-50/90' 
+                    : 'text-gray-500 dark:text-gray-400 bg-gray-100/50 dark:bg-slate-700/30 px-3 py-1.5 rounded-full w-fit'
                 )}>
-                  <div className="w-1 h-1 rounded-full bg-current"></div>
-                  {message.timestamp.toLocaleTimeString()}
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    message.role === 'user' ? 'bg-current opacity-70' : 'bg-emerald-400 dark:bg-emerald-500'
+                  )}></div>
+                  <span className="font-semibold">{message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
               </div>
               
               {message.role === 'user' && (
-                <Avatar className="h-10 w-10 bg-blue-500 text-white">
-                  <AvatarFallback className="bg-blue-500 text-white">
+                <Avatar className="h-9 w-9 bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-sm flex-shrink-0">
+                  <AvatarFallback className="bg-gradient-to-br from-blue-500 to-blue-600 text-white">
                       <User className="h-5 w-5" />
                   </AvatarFallback>
                 </Avatar>
@@ -4261,20 +4352,20 @@ const AIChat: React.FC = () => {
           ))}
           
           {isLoading && (
-            <div className="flex gap-4 justify-start">
-              <Avatar className="h-10 w-10 bg-green-500 text-white">
-                <AvatarFallback className="bg-green-500 text-white">
+            <div className="flex gap-3 items-start justify-start">
+              <Avatar className="h-9 w-9 bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-sm flex-shrink-0">
+                <AvatarFallback className="bg-gradient-to-br from-emerald-500 to-green-600 text-white">
                     <Bot className="h-5 w-5" />
                 </AvatarFallback>
               </Avatar>
-              <div className="bg-gray-100 dark:bg-slate-800 rounded-lg px-4 py-3 shadow-sm">
+              <div className="bg-white dark:bg-slate-800 rounded-2xl px-5 py-4 shadow-md border border-gray-200 dark:border-slate-700/50">
                 <div className="flex items-center gap-3">
-                  <div className="flex space-x-1">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                  <div className="flex space-x-1.5">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
                   </div>
-                  <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">Thinking...</span>
+                  <span className="text-sm text-gray-700 dark:text-gray-300 font-medium">Thinking...</span>
                 </div>
               </div>
             </div>
@@ -4323,27 +4414,6 @@ const AIChat: React.FC = () => {
                 }
               }}
             />
-            <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-          <Button
-                variant="ghost"
-            size="sm"
-                onClick={() => {
-                  if (!isAuthenticated) {
-                    setIsLoginModalOpen(true);
-                    return;
-                  }
-                  handleVoiceRecording();
-                }}
-                className={cn(
-                  "h-8 w-8 p-0 rounded-full",
-                  isRecording 
-                    ? "bg-red-500 text-white hover:bg-red-600" 
-                    : "bg-gray-100 hover:bg-gray-200 text-gray-600 dark:text-gray-300"
-                )}
-              >
-                {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </Button>
-            </div>
           </div>
           
           <Button

@@ -4,6 +4,10 @@ export interface AnalyzedItem {
   name: string;
   confidence?: number;
   calories?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+  fiber?: number;
 }
 
 export interface AnalyzedRecipe {

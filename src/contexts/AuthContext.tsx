@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { apiClient } from '../utils/apiClient';
+import { AppError, ErrorCode } from '../utils/errors';
 
 interface User {
   id?: string;
@@ -21,6 +22,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isAdmin: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
+  googleSignIn: (accessToken: string, mode?: 'login' | 'signup') => Promise<{ success: boolean; message?: string; account_exists?: boolean }>;
   signup: (name: string, email: string, password: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
   isLoading: boolean;
@@ -44,33 +46,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
   const [isDatabaseAvailable, setIsDatabaseAvailable] = useState(true);
 
-  // Helper function to get auth token
   const getAuthToken = () => {
     return localStorage.getItem('nutriai_token');
   };
 
-  useEffect(() => {
-    // Check if user is logged in from localStorage
-    const savedUser = localStorage.getItem('nutriai_user');
-    const savedToken = localStorage.getItem('nutriai_token');
-    
-    if (savedUser && savedToken) {
-      // Parse saved user to check admin status
-      try {
-        const parsedUser = JSON.parse(savedUser);
-        // Always verify token with backend to get latest admin status
-        verifyToken();
-      } catch {
-        // If parsing fails, verify token anyway
-        verifyToken();
-      }
-    } else {
-      setIsLoading(false);
-    }
-  }, []);
+  // Helper function to handle database unavailable errors
+  const handleDatabaseUnavailable = (): { success: false; message: string } => {
+    console.warn('Database not available - authentication features disabled');
+    setIsDatabaseAvailable(false);
+    return { 
+      success: false, 
+      message: 'Authentication service temporarily unavailable. Please set up MySQL database to use authentication features.' 
+    };
+  };
 
-  // Verify token with backend
-  const verifyToken = async () => {
+  // Helper function to check if error is database unavailable
+  const isDatabaseUnavailableError = (error: unknown): boolean => {
+    return error instanceof Error && error.message.includes('Authentication service temporarily unavailable');
+  };
+
+  const verifyToken = useCallback(async () => {
     try {
       const response = await apiClient.getProfile();
       if (response.success && response.data?.user) {
@@ -83,36 +78,88 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             canTrackProgress: true
           }
         };
-        setUser(userData);
+        // Only update user if data actually changed to prevent unnecessary re-renders
+        setUser(prevUser => {
+          if (prevUser && JSON.stringify(prevUser) === JSON.stringify(userData)) {
+            return prevUser; // Return same reference if data unchanged
+          }
+          return userData;
+        });
         localStorage.setItem('nutriai_user', JSON.stringify(userData));
         setIsDatabaseAvailable(true);
       } else {
-        // Token is invalid, clear storage silently
+        setUser(null);
         localStorage.removeItem('nutriai_user');
         localStorage.removeItem('nutriai_token');
       }
-    } catch (error) {
-      // Check if it's a database unavailable error
-      if (error instanceof Error && error.message.includes('Authentication service temporarily unavailable')) {
-        console.warn('Database not available - authentication features disabled');
-        setIsDatabaseAvailable(false);
-        // Don't clear storage for database unavailability
+    } catch (error: any) {
+      if (isDatabaseUnavailableError(error)) {
+        handleDatabaseUnavailable();
         setIsLoading(false);
         return;
       }
       
-      // Only log non-401 errors (401 is expected when token is expired/invalid)
-      const status = (error as any)?.status;
-      if (status !== 401) {
-        console.error('Token verification failed:', error);
+      const status = error?.status || (error?.response?.status);
+      
+      // Check if it's a connection refused error (backend not running)
+      if (error instanceof AppError && error.code === ErrorCode.CONNECTION_REFUSED) {
+        console.warn('Backend server not running. Please start the Flask backend server.');
+        setUser(null);
+        localStorage.removeItem('nutriai_user');
+        localStorage.removeItem('nutriai_token');
+        setIsLoading(false);
+        return;
       }
-      // Token is invalid or expired, clear storage silently
-      localStorage.removeItem('nutriai_user');
-      localStorage.removeItem('nutriai_token');
+      
+      if (status === 401) {
+        setUser(null);
+        localStorage.removeItem('nutriai_user');
+        localStorage.removeItem('nutriai_token');
+        hasVerifiedTokenRef.current = false; // Reset on 401 to allow retry
+      } else {
+        console.error('Token verification failed:', error);
+        setUser(null);
+        localStorage.removeItem('nutriai_user');
+        localStorage.removeItem('nutriai_token');
+      }
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  const hasVerifiedTokenRef = useRef(false);
+
+  useEffect(() => {
+    // Only verify token once on mount
+    if (hasVerifiedTokenRef.current) {
+      return;
+    }
+
+    const savedUser = localStorage.getItem('nutriai_user');
+    const savedToken = localStorage.getItem('nutriai_token');
+    
+    if (savedUser && savedToken) {
+      hasVerifiedTokenRef.current = true;
+      try {
+        const parsedUser = JSON.parse(savedUser);
+        verifyToken().catch((error) => {
+          if (error?.status !== 401) {
+            console.error('Error verifying token:', error);
+          }
+          hasVerifiedTokenRef.current = false; // Allow retry on error
+        });
+      } catch {
+        verifyToken().catch((error) => {
+          if (error?.status !== 401) {
+            console.error('Error verifying token:', error);
+          }
+          hasVerifiedTokenRef.current = false; // Allow retry on error
+        });
+      }
+    } else {
+      setIsLoading(false);
+    }
+  }, [verifyToken]);
 
   const login = async (email: string, password: string): Promise<{ success: boolean; message?: string }> => {
     setIsLoading(true);
@@ -143,11 +190,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       setIsLoading(false);
       
-      // Check if it's a database unavailable error
-      if (error instanceof Error && error.message.includes('Authentication service temporarily unavailable')) {
-        console.warn('Database not available - authentication features disabled');
-        setIsDatabaseAvailable(false);
-        return { success: false, message: 'Authentication service temporarily unavailable. Please set up MySQL database to use authentication features.' };
+      if (isDatabaseUnavailableError(error)) {
+        return handleDatabaseUnavailable();
       }
       
       console.error('Login error:', error instanceof Error ? error.message : 'Unknown error');
@@ -155,17 +199,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signup = async (name: string, email: string, password: string): Promise<{ success: boolean; message?: string }> => {
+  const googleSignIn = async (accessToken: string, mode: 'login' | 'signup' = 'login'): Promise<{ success: boolean; message?: string; account_exists?: boolean }> => {
+    setIsLoading(true);
+    try {
+      const response = await apiClient.googleSignIn(accessToken, mode);
+
+      if (response.success && response.data?.user && response.data?.token) {
+        const userData = {
+          ...response.data.user,
+          is_admin: response.data.user.is_admin || false,
+          permissions: {
+            canUseChat: true,
+            canAnalyzeFood: true,
+            canTrackProgress: true
+          }
+        };
+        
+        setUser(userData);
+        localStorage.setItem('nutriai_user', JSON.stringify(userData));
+        localStorage.setItem('nutriai_token', response.data.token);
+        setIsDatabaseAvailable(true);
+        setIsLoading(false);
+        return { success: true };
+      } else {
+        setIsLoading(false);
+        const accountExists = (response as any).account_exists || false;
+        return { 
+          success: false, 
+          message: response.message || 'Google sign-in failed',
+          account_exists: accountExists
+        };
+      }
+    } catch (error) {
+      setIsLoading(false);
+      
+      if (isDatabaseUnavailableError(error)) {
+        return handleDatabaseUnavailable();
+      }
+      
+      console.error('Google sign-in error:', error instanceof Error ? error.message : 'Unknown error');
+      return { success: false, message: error instanceof Error ? error.message : 'Google sign-in failed' };
+    }
+  };
+
+  const signup = async (name: string, email: string, password: string): Promise<{ success: boolean; message?: string; verificationCode?: string; emailSent?: boolean }> => {
     setIsLoading(true);
     try {
       const response = await apiClient.register(name, email, password);
 
       if (response.success) {
-        // Don't automatically log in after signup - user needs to verify email first
-        // Return true to indicate successful registration
         setIsDatabaseAvailable(true);
         setIsLoading(false);
-        return { success: true };
+        return { 
+          success: true,
+          verificationCode: response.data?.verificationCode,
+          emailSent: response.data?.emailSent,
+          message: response.message
+        };
       } else {
         setIsLoading(false);
         return { success: false, message: response.message || 'Registration failed' };
@@ -173,29 +263,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (error) {
       setIsLoading(false);
       
-      // Check if it's a database unavailable error
-      if (error instanceof Error && error.message.includes('Authentication service temporarily unavailable')) {
-        console.warn('Database not available - authentication features disabled');
-        setIsDatabaseAvailable(false);
-        return { success: false, message: 'Authentication service temporarily unavailable. Please set up MySQL database to use authentication features.' };
+      if (isDatabaseUnavailableError(error)) {
+        return handleDatabaseUnavailable();
       }
       
-      console.error('Signup error:', error instanceof Error ? error.message : 'Unknown error');
-      return { success: false, message: error instanceof Error ? error.message : 'Registration failed' };
+      // Don't log validation errors (409, 400) as errors - they're expected user input issues
+      const status = (error as any)?.status || (error as any)?.statusCode;
+      const isValidationError = status === 409 || status === 400 || 
+                                (error instanceof AppError && 
+                                 (error.code === ErrorCode.VALIDATION_ERROR || 
+                                  error.statusCode === 409 || 
+                                  error.statusCode === 400));
+      
+      if (!isValidationError) {
+        console.error('Signup error:', error instanceof Error ? error.message : 'Unknown error');
+      }
+      
+      // Use user-friendly message from AppError if available
+      const errorMessage = error instanceof AppError 
+        ? error.userMessage 
+        : (error instanceof Error ? error.message : 'Registration failed');
+      
+      return { success: false, message: errorMessage };
     }
   };
 
   const logout = async () => {
     try {
-      // Call logout endpoint to invalidate token on server
       await apiClient.post('/auth/logout');
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      // Clear local storage regardless of API call result
       setUser(null);
       localStorage.removeItem('nutriai_user');
       localStorage.removeItem('nutriai_token');
+      hasVerifiedTokenRef.current = false; // Reset ref on logout to allow re-verification
     }
   };
 
@@ -243,6 +345,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isAuthenticated,
     isAdmin: user?.is_admin || false,
     login,
+    googleSignIn,
     signup,
     logout,
     isLoading,

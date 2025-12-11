@@ -64,7 +64,6 @@ interface AdminStats {
   total_calories_burned?: number;
   users_with_meals?: number;
   users_with_activity?: number;
-  engagement_rate?: number;
   signups_by_day?: Record<string, number>;
   daily_activity_trend?: Record<string, {
     meals_logged: number;
@@ -115,6 +114,68 @@ interface AdminLog {
   timestamp: string;
   ip_address?: string;
 }
+
+// Helper function to format action types into readable English
+const formatActionType = (action: string): string => {
+  const actionMap: Record<string, string> = {
+    'toggle_admin': 'Toggle Admin Status',
+    'delete_user': 'Delete User',
+    'delete_history': 'Delete History',
+    'bulk_delete': 'Bulk Delete Users',
+    'bulk_verify': 'Bulk Verify Users',
+    'bulk_unverify': 'Bulk Unverify Users',
+    'bulk_promote': 'Bulk Promote to Admin',
+    'bulk_demote': 'Bulk Remove Admin Status',
+  };
+  
+  // If it's a bulk action, try to format it
+  if (action.startsWith('bulk_')) {
+    return actionMap[action] || action.split('_').map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(' ');
+  }
+  
+  return actionMap[action] || action.split('_').map(word => 
+    word.charAt(0).toUpperCase() + word.slice(1)
+  ).join(' ');
+};
+
+// Helper function to format details into readable paragraph format
+const formatDetails = (details: any): string => {
+  if (!details || typeof details !== 'object') {
+    return String(details);
+  }
+  
+  const fieldMap: Record<string, string> = {
+    'user_id': 'User ID',
+    'user_email': 'User Email',
+    'is_admin': 'Admin Status',
+    'user_ids': 'User IDs',
+    'results': 'Results',
+  };
+  
+  const parts: string[] = [];
+  
+  for (const [key, value] of Object.entries(details)) {
+    const formattedKey = fieldMap[key] || key.split('_').map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(' ');
+    
+    // Format boolean values
+    let formattedValue: string;
+    if (typeof value === 'boolean') {
+      formattedValue = value ? 'Yes' : 'No';
+    } else if (Array.isArray(value)) {
+      formattedValue = value.join(', ');
+    } else {
+      formattedValue = String(value);
+    }
+    
+    parts.push(`${formattedKey}: ${formattedValue}`);
+  }
+  
+  return parts.join(' • ');
+};
 
 const Admin = () => {
   const { user, isAdmin, isAuthenticated } = useAuth();
@@ -449,7 +510,7 @@ const Admin = () => {
               {/* Statistics Cards */}
               {stats && (
                 <>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
                     <Card>
                       <CardHeader className="pb-2">
                         <CardDescription>Total Users</CardDescription>
@@ -459,7 +520,7 @@ const Admin = () => {
                     <Card>
                       <CardHeader className="pb-2">
                         <CardDescription>Active Users</CardDescription>
-                        <CardTitle className="text-2xl">{stats.active_users || 0}</CardTitle>
+                        <CardTitle className="text-2xl">{Math.min(stats.active_users || 0, stats.total_users || 0)}</CardTitle>
                       </CardHeader>
                     </Card>
                     <Card>
@@ -478,12 +539,6 @@ const Admin = () => {
                       <CardHeader className="pb-2">
                         <CardDescription>Recent Signups</CardDescription>
                         <CardTitle className="text-2xl">{stats.recent_signups}</CardTitle>
-                      </CardHeader>
-                    </Card>
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <CardDescription>Engagement Rate</CardDescription>
-                        <CardTitle className="text-2xl">{stats.engagement_rate || 0}%</CardTitle>
                       </CardHeader>
                     </Card>
                   </div>
@@ -765,16 +820,14 @@ const Admin = () => {
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-1">
-                                  <Badge variant="outline">{log.action}</Badge>
+                                  <Badge variant="outline">{formatActionType(log.action)}</Badge>
                                   <span className="text-sm font-medium">{log.admin_name}</span>
                                   <span className="text-xs text-muted-foreground">({log.admin_email})</span>
                                 </div>
                                 {log.details && Object.keys(log.details).length > 0 && (
-                                  <div className="text-sm text-muted-foreground mt-2">
-                                    <pre className="bg-muted p-2 rounded text-xs overflow-x-auto">
-                                      {JSON.stringify(log.details, null, 2)}
-                                    </pre>
-                                  </div>
+                                  <p className="text-sm text-muted-foreground mt-2">
+                                    {formatDetails(log.details)}
+                                  </p>
                                 )}
                                 <p className="text-xs text-muted-foreground mt-2">
                                   {new Date(log.timestamp).toLocaleString()}

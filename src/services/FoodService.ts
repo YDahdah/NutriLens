@@ -1,5 +1,10 @@
 // Food Database Service - Now using shared API client
 import { apiClient } from '../utils/apiClient';
+import { Cache } from '../utils/cache';
+import { AppError } from '../utils/errors';
+import { logger } from '../utils/logger';
+
+const cache = Cache.getInstance();
 
 export interface FoodItem {
   food_id: number;
@@ -46,9 +51,20 @@ export class FoodService {
     // No need for baseUrl since we use the shared API client
   }
 
-  // Search foods by name or category with AbortSignal support
+  // Search foods by name or category with AbortSignal support and caching
   async searchFoods(query: string, filters?: SearchFilters & { limit?: number }, signal?: AbortSignal): Promise<FoodItem[]> {
     try {
+      // Generate cache key
+      const cacheKey = `food_search:${query}:${JSON.stringify(filters || {})}`;
+      
+      // Try cache first (only for non-aborted requests)
+      if (!signal?.aborted) {
+        const cached = cache.get<FoodItem[]>(cacheKey);
+        if (cached !== null) {
+          return cached;
+        }
+      }
+
       const params = new URLSearchParams();
       params.append('q', query);
       params.append('limit', (filters?.limit || 10).toString());
@@ -61,12 +77,31 @@ export class FoodService {
 
       const url = `/foods/search?${params.toString()}`;
       
-      const response = await apiClient.get(url, { signal });
-      return response.data || [];
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        console.error('Error searching foods:', error);
+      const response = await apiClient.get(url, { retry: true });
+      const foods = response.data || [];
+      
+      // Cache results for 5 minutes
+      if (!signal?.aborted && foods.length > 0) {
+        cache.set(cacheKey, foods, 300000);
       }
+      
+      return foods;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        return [];
+      }
+      
+      const appError = AppError.fromError(error);
+      logger.error('Error searching foods:', appError);
+      
+      // Return cached results if available, even on error
+      const cacheKey = `food_search:${query}:${JSON.stringify(filters || {})}`;
+      const cached = cache.get<FoodItem[]>(cacheKey);
+      if (cached !== null) {
+        logger.debug('Returning cached results due to error');
+        return cached;
+      }
+      
       return [];
     }
   }

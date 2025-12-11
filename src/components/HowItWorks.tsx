@@ -1,6 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Camera, Brain, TrendingUp } from "lucide-react";
+import { Camera, MessageCircle, TrendingUp } from "lucide-react";
 
 const HowItWorks = () => {
 
@@ -14,9 +14,9 @@ const HowItWorks = () => {
     },
     {
       step: "02", 
-      icon: Brain,
-      title: "AI Analysis",
-      description: "Advanced computer vision analyzes ingredients, portion sizes, and nutritional content with remarkable accuracy.",
+      icon: MessageCircle,
+      title: "AI Chatbot",
+      description: "Chat with our intelligent nutrition assistant for personalized meal advice, recipe suggestions, and dietary guidance.",
       color: "bg-accent"
     },
     {
@@ -44,15 +44,15 @@ const HowItWorks = () => {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8 items-stretch">
           {steps.map((step, index) => (
-            <div key={index} className="relative">
+            <div key={index} className="relative flex">
               {/* Connection Line */}
               {index < steps.length - 1 && (
                 <div className="hidden md:block absolute top-16 left-full w-full h-0.5 bg-gradient-to-r from-primary/50 to-transparent transform translate-x-8 -translate-y-1/2 z-0"></div>
               )}
               
-              <Card className="relative z-10 p-6 sm:p-8 text-center shadow-soft hover:shadow-medium transition-all duration-300 hover:-translate-y-1">
+              <Card className="relative z-10 p-6 sm:p-8 text-center shadow-soft hover:shadow-medium transition-all duration-300 hover:-translate-y-1 h-full flex flex-col">
                 <div className="relative mb-4 sm:mb-6">
                   <div className={`w-12 h-12 sm:w-14 sm:h-14 lg:w-16 lg:h-16 ${step.color} rounded-xl flex items-center justify-center mx-auto mb-3 sm:mb-4`}>
                     <step.icon className="h-6 w-6 sm:h-7 sm:w-7 lg:h-8 lg:w-8 text-white" />
@@ -63,7 +63,7 @@ const HowItWorks = () => {
                 </div>
                 
                 <h3 className="text-lg sm:text-xl font-semibold mb-2 sm:mb-4">{step.title}</h3>
-                <p className="text-sm sm:text-base text-muted-foreground">{step.description}</p>
+                <p className="text-sm sm:text-base text-muted-foreground flex-grow">{step.description}</p>
               </Card>
             </div>
           ))}

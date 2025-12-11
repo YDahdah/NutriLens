@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { CheckCircle, XCircle, Loader2, Mail } from 'lucide-react';
 import { apiClient } from '@/utils/apiClient';
@@ -11,47 +13,49 @@ const VerifyEmail = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [isError, setIsError] = useState(false);
   const [message, setMessage] = useState('');
   const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
 
   useEffect(() => {
+    // Check if there's a token in URL (legacy support)
     const token = searchParams.get('token');
-    
-    if (!token) {
-      setIsError(true);
-      setMessage('No verification token provided');
-      setIsLoading(false);
-      return;
+    if (token) {
+      setIsLoading(true);
+      verifyEmailToken(token);
+    } else {
+      // Check if email is in URL params
+      const emailParam = searchParams.get('email');
+      if (emailParam) {
+        setEmail(emailParam);
+      }
     }
-
-    verifyEmail(token);
   }, [searchParams]);
 
-  const verifyEmail = async (token: string) => {
+  const verifyEmailToken = async (token: string) => {
     try {
       const response = await apiClient.verifyEmail(token);
       
       if (response.success) {
-        // Show success toast and redirect immediately without showing a page
+        setIsSuccess(true);
+        setMessage('Your email has been successfully verified. You can now log in.');
         toast({
           title: 'Email Verified!',
           description: 'Your email has been successfully verified. You can now log in.',
         });
-        // Redirect immediately to home page
-        navigate('/');
-        return;
+        setTimeout(() => navigate('/'), 2000);
       } else {
         setIsError(true);
-        setMessage(response.message);
+        setMessage(response.message || 'Failed to verify email. Please try again.');
         toast({
           title: 'Verification Failed',
           description: response.message || 'Failed to verify email. Please try again.',
           variant: 'destructive',
         });
-        setIsLoading(false);
       }
     } catch (error) {
       setIsError(true);
@@ -62,7 +66,66 @@ const VerifyEmail = () => {
         variant: 'destructive',
       });
       console.error('Email verification error:', error);
+    } finally {
       setIsLoading(false);
+    }
+  };
+
+  const verifyEmailCode = async () => {
+    if (!email || !code) {
+      toast({
+        title: 'Missing Information',
+        description: 'Please enter both your email and verification code.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (code.length !== 6) {
+      toast({
+        title: 'Invalid Code',
+        description: 'Verification code must be 6 digits.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsVerifying(true);
+    setIsError(false);
+    setMessage('');
+
+    try {
+      const response = await apiClient.verifyEmailCode(email, code);
+      
+      if (response.success) {
+        setIsSuccess(true);
+        setMessage('Your email has been successfully verified. You can now log in.');
+        toast({
+          title: 'Email Verified!',
+          description: 'Your email has been successfully verified. You can now log in.',
+        });
+        setTimeout(() => navigate('/'), 2000);
+      } else {
+        setIsError(true);
+        setMessage(response.message || 'Invalid verification code. Please try again.');
+        toast({
+          title: 'Verification Failed',
+          description: response.message || 'Invalid verification code. Please try again.',
+          variant: 'destructive',
+        });
+      }
+    } catch (error: any) {
+      setIsError(true);
+      const errorMessage = error?.message || 'Failed to verify email. Please try again.';
+      setMessage(errorMessage);
+      toast({
+        title: 'Verification Error',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+      console.error('Email verification error:', error);
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -70,7 +133,7 @@ const VerifyEmail = () => {
     if (!email) {
       toast({
         title: 'Email Required',
-        description: 'Please enter your email address to resend verification.',
+        description: 'Please enter your email address to resend verification code.',
         variant: 'destructive',
       });
       return;
@@ -81,12 +144,13 @@ const VerifyEmail = () => {
       
       if (response.success) {
         toast({
-          title: 'Verification Email Sent',
-          description: 'Please check your inbox for the verification email.',
+          title: 'Verification Code Sent',
+          description: 'Please check your inbox for the verification code.',
         });
+        setCode(''); // Clear the code input
       } else {
         toast({
-          title: 'Failed to Send Email',
+          title: 'Failed to Send Code',
           description: response.message || 'Please try again later.',
           variant: 'destructive',
         });
@@ -94,9 +158,16 @@ const VerifyEmail = () => {
     } catch (error) {
       toast({
         title: 'Error',
-        description: 'Failed to resend verification email. Please try again.',
+        description: 'Failed to resend verification code. Please try again.',
         variant: 'destructive',
       });
+    }
+  };
+
+  const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/\D/g, ''); // Only allow digits
+    if (value.length <= 6) {
+      setCode(value);
     }
   };
 
@@ -124,67 +195,113 @@ const VerifyEmail = () => {
             {isSuccess ? (
               <CheckCircle className="h-6 w-6 text-green-600" />
             ) : (
-              <XCircle className="h-6 w-6 text-red-600" />
+              <Mail className="h-6 w-6 text-primary" />
             )}
           </div>
           <CardTitle>
-            {isSuccess ? 'Email Verified!' : 'Verification Failed'}
+            {isSuccess ? 'Email Verified!' : 'Verify Your Email'}
           </CardTitle>
           <CardDescription>
             {isSuccess 
               ? 'Your email has been successfully verified. You can now log in to your account.'
-              : 'There was a problem verifying your email address.'
+              : 'Enter the verification code sent to your email address.'
             }
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Alert className={isSuccess ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}>
-            <AlertDescription className={isSuccess ? 'text-green-800' : 'text-red-800'}>
-              {message}
-            </AlertDescription>
-          </Alert>
-
           {isSuccess ? (
-            <div className="space-y-3">
+            <>
+              <Alert className="border-green-200 bg-green-50">
+                <AlertDescription className="text-green-800">
+                  {message}
+                </AlertDescription>
+              </Alert>
               <Button 
                 onClick={() => navigate('/')} 
                 className="w-full"
               >
                 Go to Login
               </Button>
-            </div>
+            </>
           ) : (
-            <div className="space-y-3">
-              <div className="space-y-2">
-                <label htmlFor="email" className="text-sm font-medium">
-                  Enter your email to resend verification:
-                </label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="your@email.com"
-                  className="w-full px-3 py-2 border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
-                />
+            <>
+              {isError && (
+                <Alert className="border-red-200 bg-red-50">
+                  <AlertDescription className="text-red-800">
+                    {message}
+                  </AlertDescription>
+                </Alert>
+              )}
+              
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email Address</Label>
+                  <Input
+                    id="email"
+                    name="email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="your@email.com"
+                    required
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="code">Verification Code</Label>
+                  <Input
+                    id="code"
+                    name="code"
+                    type="text"
+                    value={code}
+                    onChange={handleCodeChange}
+                    placeholder="000000"
+                    maxLength={6}
+                    className="text-center text-2xl font-mono tracking-widest"
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Enter the 6-digit code sent to your email
+                  </p>
+                </div>
+                
+                <Button 
+                  onClick={verifyEmailCode}
+                  className="w-full"
+                  disabled={isVerifying || !email || code.length !== 6}
+                >
+                  {isVerifying ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Verifying...
+                    </>
+                  ) : (
+                    'Verify Email'
+                  )}
+                </Button>
+                
+                <div className="text-center text-sm text-muted-foreground">
+                  <p className="mb-2">Didn't receive the code?</p>
+                  <Button 
+                    onClick={resendVerification}
+                    variant="outline"
+                    size="sm"
+                    disabled={!email}
+                  >
+                    <Mail className="h-4 w-4 mr-2" />
+                    Resend Code
+                  </Button>
+                </div>
+                
+                <Button 
+                  onClick={() => navigate('/')} 
+                  variant="ghost"
+                  className="w-full"
+                >
+                  Back to Home
+                </Button>
               </div>
-              <Button 
-                onClick={resendVerification}
-                className="w-full"
-                variant="outline"
-              >
-                <Mail className="h-4 w-4 mr-2" />
-                Resend Verification Email
-              </Button>
-              <Button 
-                onClick={() => navigate('/')} 
-                variant="ghost"
-                className="w-full"
-              >
-                Back to Home
-              </Button>
-            </div>
+            </>
           )}
         </CardContent>
       </Card>

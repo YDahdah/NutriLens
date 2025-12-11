@@ -1,5 +1,9 @@
 // Shared API client utility
-const API_BASE_URL = 'http://localhost:3001/api';
+import { API_CONFIG } from '@/config/constants';
+import { AppError, ErrorRecovery, ErrorCode } from './errors';
+import { logger } from './logger';
+
+const API_BASE_URL = API_CONFIG.BASE_URL;
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -15,7 +19,25 @@ export class ApiClient {
   private chatRateLimitUntil: number = 0;
 
   constructor(baseUrl: string = API_BASE_URL) {
-    this.baseUrl = baseUrl;
+    // Validate and normalize the base URL
+    try {
+      const url = new URL(baseUrl);
+      this.baseUrl = url.origin + url.pathname.replace(/\/$/, '');
+    } catch (error) {
+      // If URL parsing fails, try to fix common issues
+      let normalizedUrl = baseUrl.trim();
+      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+        normalizedUrl = 'http://' + normalizedUrl;
+      }
+      try {
+        const url = new URL(normalizedUrl);
+        this.baseUrl = url.origin + url.pathname.replace(/\/$/, '');
+      } catch {
+        // Fallback to original if all else fails
+        console.warn(`Invalid API base URL: ${baseUrl}. Using as-is.`);
+        this.baseUrl = baseUrl;
+      }
+    }
   }
 
   static getInstance(baseUrl?: string): ApiClient {
@@ -45,9 +67,16 @@ export class ApiClient {
         defaultHeaders['Content-Type'] = 'application/json';
       }
       // Create AbortController for timeout
-      // Use longer timeout for vision analysis (vision models can be slow, especially for complex images)
+      // Use longer timeout for vision analysis, chat requests, and auth endpoints that send emails
       const isVisionRequest = endpoint.includes('/vision/analyze');
-      const timeoutDuration = isVisionRequest ? 180000 : 60000; // 180s (3 min) for vision, 60s for others
+      const isChatRequest = endpoint.includes('/chat/message');
+      const isAuthRequest = endpoint.includes('/auth/register') || 
+                           endpoint.includes('/auth/resend-verification') || 
+                           endpoint.includes('/auth/forgot-password');
+      const timeoutDuration = isVisionRequest 
+        ? API_CONFIG.TIMEOUT.VISION 
+        : (isChatRequest ? API_CONFIG.TIMEOUT.CHAT 
+          : (isAuthRequest ? 90000 : API_CONFIG.TIMEOUT.DEFAULT)); // 90 seconds for auth endpoints
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
 
@@ -68,87 +97,100 @@ export class ApiClient {
         clearTimeout(timeoutId);
         if (error.name === 'AbortError') {
           const isVisionRequest = endpoint.includes('/vision/analyze');
-          const timeoutMessage = isVisionRequest 
-            ? 'Vision analysis is taking longer than expected (over 3 minutes). The image might be complex or the service is busy. Please try again with a simpler image or wait a moment.'
-            : 'Request timeout: The server took too long to respond. Please try again.';
+          const isChatRequest = endpoint.includes('/chat/message');
+          let timeoutMessage: string;
+          if (isVisionRequest) {
+            timeoutMessage = 'Vision analysis is taking longer than expected (over 3 minutes). The image might be complex or the service is busy. Please try again with a simpler image or wait a moment.';
+          } else if (isChatRequest) {
+            timeoutMessage = 'Chat request is taking longer than expected (over 2 minutes). The AI service might be busy. Please try again in a moment.';
+          } else {
+            timeoutMessage = 'Request timeout: The server took too long to respond. Please try again.';
+          }
           throw new Error(timeoutMessage);
         }
+        // Enhance error with endpoint context for better error detection
+        if (error instanceof Error) {
+          (error as any).endpoint = endpoint;
+        }
         throw error;
       }
       
-      // Try to parse JSON, but handle cases where response might not be JSON
+      // Get raw response text first
+      const raw = await response.text();
+      
+      // Check status BEFORE parsing JSON
+      if (!response.ok) {
+        // Try to parse error response as JSON, but handle gracefully if it fails
+        let data: any;
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          // If JSON parsing fails, use raw text (truncated)
+          data = { message: `HTTP ${response.status}: ${raw.slice(0, 200)}` };
+        }
+        
+        // Create error with message and preserve status code
+        const error = new Error(data.message || `HTTP ${response.status}: ${raw.slice(0, 200)}`);
+        (error as any).status = response.status;
+        (error as any).response = { status: response.status, data };
+        throw error;
+      }
+      
+      // Parse JSON only if response is OK
       let data: any;
       try {
-        const text = await response.text();
-        data = text ? JSON.parse(text) : {};
-      } catch {
-        // If JSON parsing fails, create a simple error response
-        data = { message: `HTTP error! status: ${response.status}` };
-      }
-      
-      if (!response.ok) {
-        // Handle specific error cases more gracefully
-        if (response.status === 503 && data.message?.includes('Authentication service temporarily unavailable')) {
-          throw new Error('Authentication service temporarily unavailable. Please set up MySQL database to use authentication features.');
-        }
-        // For 401 errors, return a response that indicates auth failure without throwing
-        // This prevents console errors when checking auth status
-        if (response.status === 401) {
-          const authError = new Error('Unauthorized');
-          (authError as any).status = 401;
-          (authError as any).response = response;
-          throw authError;
-        }
-        // Provide user-friendly message for API key configuration errors
-        let errorMessage = data.message || `HTTP error! status: ${response.status}`;
-        if (response.status === 500 && data.message?.includes('Chat API key not configured')) {
-          errorMessage = 'Chat API key not configured. Please set CHAT_API_KEY environment variable in the backend and restart the server.';
-        }
-        // Create error with status code for better error handling
-        const error = new Error(errorMessage);
-        (error as any).status = response.status;
-        (error as any).response = response;
-        throw error;
+        data = raw ? JSON.parse(raw) : {};
+      } catch (parseError) {
+        // If JSON parsing fails even on OK response, throw error
+        throw new Error(`Invalid JSON response: ${raw.slice(0, 200)}`);
       }
       
       return data;
     } catch (error) {
-      // Don't log expected errors (database unavailable, 401 auth failures, validation errors, rate limits)
-      const isDatabaseError = error instanceof Error && error.message.includes('Authentication service temporarily unavailable');
-      const isAuthError = (error as any)?.status === 401;
-      const isRateLimitError = (error as any)?.status === 429 || (error instanceof Error && (
-        error.message.toLowerCase().includes('rate limit') ||
-        error.message.toLowerCase().includes('too many requests') ||
-        error.message.toLowerCase().includes('daily free model limit')
-      ));
-      const isValidationError = error instanceof Error && (
-        error.message.includes('Password must be') ||
-        error.message.includes('Invalid') ||
-        error.message.includes('required')
-      );
-      const isTimeoutError = error instanceof Error && (error.message.includes('timeout') || error.message.includes('aborted'));
-      
-      if (!isDatabaseError && !isAuthError && !isValidationError && !isRateLimitError) {
-        console.error('API request error:', error);
+      // Convert to AppError for better error handling
+      const appError = AppError.fromError(error, {
+        endpoint,
+        method: options.method || 'GET',
+        baseUrl: this.baseUrl,
+      });
+
+      // Log errors appropriately
+      // Don't log expected/validation errors as errors - they're normal user input issues
+      if (appError.code === ErrorCode.UNAUTHORIZED || 
+          appError.code === ErrorCode.VALIDATION_ERROR ||
+          appError.code === ErrorCode.RATE_LIMIT ||
+          appError.code === ErrorCode.CONNECTION_REFUSED ||
+          appError.statusCode === 409 || // 409 conflicts are validation errors
+          appError.statusCode === 400) { // 400 bad requests are validation errors
+        // Log as debug - these are expected errors, not system failures
+        logger.debug('Expected error:', appError);
+      } else {
+        logger.error('API request error:', appError);
       }
       
-      // Re-throw with better error message for timeouts
-      if (isTimeoutError) {
-        const timeoutError = new Error('Request timeout: The server took too long to respond. Please check your connection and try again.');
-        (timeoutError as any).status = 408;
-        throw timeoutError;
-      }
-      
-      throw error;
+      throw appError;
     }
   }
 
-  // Generic CRUD operations
-  async get<T = any>(endpoint: string): Promise<ApiResponse<T>> {
-    return this.makeRequest<T>(endpoint, { method: 'GET' });
+  // Generic CRUD operations with retry logic
+  async get<T = any>(endpoint: string, options: { retry?: boolean } = {}): Promise<ApiResponse<T>> {
+    const makeRequest = () => this.makeRequest<T>(endpoint, { method: 'GET' });
+    
+    if (options.retry !== false) {
+      return ErrorRecovery.retryWithBackoff(makeRequest, {
+        maxRetries: 2,
+        initialDelay: 1000,
+        retryable: (error) => {
+          const appError = AppError.fromError(error);
+          return appError.retryable && appError.code !== ErrorCode.UNAUTHORIZED;
+        },
+      });
+    }
+    
+    return makeRequest();
   }
 
-  async post<T = any>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  async post<T = any>(endpoint: string, data?: any, options: { retry?: boolean } = {}): Promise<ApiResponse<T>> {
     // Special rate limiting for chat endpoint
     if (endpoint === '/chat/message') {
       const now = Date.now();
@@ -184,19 +226,34 @@ export class ApiClient {
       this.lastChatRequestTime = now;
       
       try {
-        const response = await this.makeRequest<T>(endpoint, {
+        const makeRequest = () => this.makeRequest<T>(endpoint, {
           method: 'POST',
           body: data ? JSON.stringify(data) : undefined,
         });
+        
+        const response = options.retry !== false
+          ? await ErrorRecovery.retryWithBackoff(makeRequest, {
+              maxRetries: 1, // Only 1 retry for POST requests
+              initialDelay: 2000,
+              retryable: (error) => {
+                const appError = AppError.fromError(error);
+                return appError.retryable && 
+                       appError.code !== ErrorCode.UNAUTHORIZED &&
+                       appError.code !== ErrorCode.VALIDATION_ERROR;
+              },
+            })
+          : await makeRequest();
+        
         return response;
       } catch (error: any) {
         // If rate limited by server, set longer cooldown
-        if (error?.status === 429) {
-          this.chatRateLimitUntil = Date.now() + 60000; // 60 seconds
+        const appError = AppError.fromError(error);
+        if (appError.code === ErrorCode.RATE_LIMIT) {
+          this.chatRateLimitUntil = Date.now() + (appError.retryAfter || 60) * 1000;
           // Clear rate limit after cooldown
           setTimeout(() => {
             this.chatRateLimitUntil = 0;
-          }, 60000);
+          }, (appError.retryAfter || 60) * 1000);
         }
         throw error;
       } finally {
@@ -204,10 +261,23 @@ export class ApiClient {
       }
     }
     
-    return this.makeRequest<T>(endpoint, {
+    const makeRequest = () => this.makeRequest<T>(endpoint, {
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
+    
+    if (options.retry !== false) {
+      return ErrorRecovery.retryWithBackoff(makeRequest, {
+        maxRetries: 1,
+        initialDelay: 1000,
+        retryable: (error) => {
+          const appError = AppError.fromError(error);
+          return appError.retryable && appError.code !== ErrorCode.UNAUTHORIZED;
+        },
+      });
+    }
+    
+    return makeRequest();
   }
 
   async upload<T = any>(endpoint: string, formData: FormData): Promise<ApiResponse<T>> {
@@ -233,6 +303,10 @@ export class ApiClient {
     return this.post('/auth/login', { email, password });
   }
 
+  async googleSignIn(accessToken: string, mode: 'login' | 'signup' = 'login'): Promise<ApiResponse<{ user: any; token: string }>> {
+    return this.post('/auth/google-signin', { accessToken, mode });
+  }
+
   async register(name: string, email: string, password: string): Promise<ApiResponse<{ user: any; emailSent: boolean; verificationUrl?: string }>> {
     return this.post('/auth/register', { name, email, password });
   }
@@ -244,6 +318,10 @@ export class ApiClient {
   // Email verification methods
   async verifyEmail(token: string): Promise<ApiResponse<any>> {
     return this.get(`/auth/verify-email?token=${encodeURIComponent(token)}`);
+  }
+
+  async verifyEmailCode(email: string, code: string): Promise<ApiResponse<any>> {
+    return this.post('/auth/verify-email-code', { email, code });
   }
 
   async resendVerification(email: string): Promise<ApiResponse<any>> {
@@ -264,12 +342,12 @@ export class ApiClient {
   }
 
   // Food-specific methods
-  async searchFoods(query: string, limit: number = 10): Promise<ApiResponse<any[]>> {
-    return this.get(`/foods/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+  async searchFoods<T = any>(query: string, limit: number = 10): Promise<ApiResponse<T[]>> {
+    return this.get<T[]>(`/foods/search?q=${encodeURIComponent(query)}&limit=${limit}`);
   }
 
-  async getFoodById(id: string): Promise<ApiResponse<any>> {
-    return this.get(`/foods/${id}`);
+  async getFoodById<T = any>(id: string): Promise<ApiResponse<T>> {
+    return this.get<T>(`/foods/${id}`);
   }
 
   // Admin endpoints

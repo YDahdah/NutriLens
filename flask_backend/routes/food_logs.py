@@ -1,8 +1,13 @@
 from datetime import datetime
 from flask import Blueprint, request, jsonify, current_app
 from routes.auth import verify_token
+import re
 
 food_logs_bp = Blueprint('food_logs', __name__)
+
+# Compile regex patterns once for better performance
+ML_PATTERN = re.compile(r'(\d+)\s*ml', re.IGNORECASE)
+WEIGHT_PATTERN = re.compile(r'(\d+(?:\.\d+)?)\s*g(?:rams?)?', re.IGNORECASE)
 
 
 def require_auth():
@@ -27,32 +32,72 @@ def log_food():
     quantity = data.get('quantity')
     meal_type = data.get('mealType')
     logged_at = data.get('loggedAt') or datetime.utcnow()
+    unit = data.get('unit', 'g').lower()
+    original_amount = data.get('originalAmount', quantity)
     
     if not food_id or not quantity or not meal_type:
         return jsonify({'success': False, 'message': 'Food ID, quantity, and meal type are required'}), 400
     
     try:
-        # Get food from MongoDB foods collection
-        # food_id from frontend is actually MongoDB _id as a string
+        quantity_float = float(quantity)
+        if quantity_float <= 0:
+            return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
+        original_amount_float = float(original_amount) if original_amount else quantity_float
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'Invalid quantity value'}), 400
+    
+    try:
         from bson import ObjectId
         foods_collection = current_app.mongo_db.foods
         
         try:
-            # Try to find by _id (MongoDB ObjectId)
             food = foods_collection.find_one({'_id': ObjectId(str(food_id))})
         except:
-            # If ObjectId conversion fails, try finding by name or other fields
             food = None
         
         if not food:
             return jsonify({'success': False, 'message': f'Food not found with ID: {food_id}'}), 404
         
-        # Save to MongoDB user_food_logs collection
         food_logs_collection = current_app.mongo_db.user_food_logs
         
-        # Calculate nutrition
         serving_weight = food.get('serving_weight_grams') or 100
-        multiplier = float(quantity) / serving_weight
+        serving_size = food.get('serving_size') or food.get('serving') or '100 g'
+        food_name = food.get('name', '').lower()
+        
+        piece_based_units = ['piece', 'slice', 'egg', 'apple', 'banana', 'cookie', 'cracker', 'muffin', 'donut', 'bagel', 'roll', 'meatball', 'nugget', 'patty', 'sausage', 'hot dog', 'burger', 'pancake', 'waffle', 'toast', 'biscuit', 'croissant', 'pretzel']
+        is_piece_based = any(piece_unit in unit for piece_unit in piece_based_units)
+        is_drink = unit in ['can', 'bottle'] or 'ml' in unit
+        
+        multiplier = 1.0
+        
+        if is_drink:
+            serving_size_ml = serving_weight
+            if serving_size:
+                ml_match = ML_PATTERN.search(serving_size)
+                if ml_match:
+                    serving_size_ml = float(ml_match.group(1))
+            multiplier = quantity_float / serving_size_ml if serving_size_ml > 0 else quantity_float / 100
+        elif is_piece_based:
+            weight_per_piece = serving_weight
+            if serving_size:
+                weight_match = WEIGHT_PATTERN.search(serving_size)
+                if weight_match:
+                    weight_per_piece = float(weight_match.group(1))
+                else:
+                    if 'egg' in unit:
+                        weight_per_piece = 50
+                    elif 'apple' in unit:
+                        weight_per_piece = 182
+                    elif 'banana' in unit:
+                        weight_per_piece = 118
+                    elif serving_weight < 200:
+                        weight_per_piece = serving_weight
+                    else:
+                        weight_per_piece = 100
+            total_weight = original_amount_float * weight_per_piece
+            multiplier = total_weight / serving_weight if serving_weight > 0 else 1.0
+        else:
+            multiplier = quantity_float / serving_weight if serving_weight > 0 else quantity_float / 100
         
         nutrition = {
             'calories': round(float(food.get('calories', 0)) * multiplier),
@@ -83,9 +128,9 @@ def log_food():
         # Create log entry in MongoDB
         log_entry = {
             'user_id': user_id,
-            'food_id': str(food_id),  # Store as string to match MongoDB _id format
+            'food_id': str(food_id),
             'food_name': food.get('name', 'Unknown'),
-            'quantity': float(quantity),
+            'quantity': quantity_float,
             'meal_type': meal_type,
             'logged_at': logged_at_dt,
             'nutrition': nutrition,
@@ -100,7 +145,7 @@ def log_food():
             'data': {
                 'logId': str(result.inserted_id),
                 'foodName': food.get('name', 'Unknown'),
-                'quantity': float(quantity),
+                'quantity': quantity_float,
                 'mealType': meal_type,
                 'loggedAt': log_entry['logged_at'].isoformat(),
                 'nutrition': nutrition,
@@ -131,13 +176,23 @@ def get_logs():
         # Get logs from MongoDB
         food_logs_collection = current_app.mongo_db.user_food_logs
         
-        logs = list(food_logs_collection.find({
-            'user_id': user_id,
-            'logged_at': {
-                '$gte': start_date,
-                '$lte': end_date
+        # Use projection to only fetch needed fields
+        logs = list(food_logs_collection.find(
+            {
+                'user_id': user_id,
+                'logged_at': {
+                    '$gte': start_date,
+                    '$lte': end_date
+                }
+            },
+            {
+                'food_name': 1,
+                'quantity': 1,
+                'meal_type': 1,
+                'logged_at': 1,
+                'nutrition': 1
             }
-        }))
+        ).sort('logged_at', -1))
         
         groups = {'breakfast': [], 'lunch': [], 'dinner': [], 'snack': []}
         totals = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat': 0, 'fiber': 0, 'sugar': 0, 'sodium': 0}
@@ -185,6 +240,7 @@ def update_log(log_id: str):
         data = request.get_json(silent=True) or {}
         
         food_logs_collection = current_app.mongo_db.user_food_logs
+        foods_collection = current_app.mongo_db.foods
         
         try:
             oid = ObjectId(log_id)
@@ -197,8 +253,69 @@ def update_log(log_id: str):
             return jsonify({'success': False, 'message': 'Food log not found'}), 404
         
         update_data = {}
-        if 'quantity' in data:
-            update_data['quantity'] = float(data['quantity'])
+        recalculate_nutrition = False
+        
+        if 'quantity' in data or 'unit' in data or 'originalAmount' in data:
+            quantity = float(data.get('quantity', log.get('quantity', 0)))
+            unit = data.get('unit', 'g').lower()
+            original_amount = float(data.get('originalAmount', quantity))
+            
+            update_data['quantity'] = quantity
+            
+            try:
+                food = foods_collection.find_one({'_id': ObjectId(str(log.get('food_id')))})
+                if food:
+                    recalculate_nutrition = True
+                    serving_weight = food.get('serving_weight_grams') or 100
+                    serving_size = food.get('serving_size') or food.get('serving') or '100 g'
+                    
+                    piece_based_units = ['piece', 'slice', 'egg', 'apple', 'banana', 'cookie', 'cracker', 'muffin', 'donut', 'bagel', 'roll', 'meatball', 'nugget', 'patty', 'sausage', 'hot dog', 'burger', 'pancake', 'waffle', 'toast', 'biscuit', 'croissant', 'pretzel']
+                    is_piece_based = any(piece_unit in unit for piece_unit in piece_based_units)
+                    is_drink = unit in ['can', 'bottle'] or 'ml' in unit
+                    
+                    multiplier = 1.0
+                    
+                    if is_drink:
+                        serving_size_ml = serving_weight
+                        if serving_size:
+                            ml_match = ML_PATTERN.search(serving_size)
+                            if ml_match:
+                                serving_size_ml = float(ml_match.group(1))
+                        multiplier = quantity / serving_size_ml if serving_size_ml > 0 else quantity / 100
+                    elif is_piece_based:
+                        weight_per_piece = serving_weight
+                        if serving_size:
+                            weight_match = WEIGHT_PATTERN.search(serving_size)
+                            if weight_match:
+                                weight_per_piece = float(weight_match.group(1))
+                            else:
+                                if 'egg' in unit:
+                                    weight_per_piece = 50
+                                elif 'apple' in unit:
+                                    weight_per_piece = 182
+                                elif 'banana' in unit:
+                                    weight_per_piece = 118
+                                elif serving_weight < 200:
+                                    weight_per_piece = serving_weight
+                                else:
+                                    weight_per_piece = 100
+                        total_weight = original_amount * weight_per_piece
+                        multiplier = total_weight / serving_weight if serving_weight > 0 else 1.0
+                    else:
+                        multiplier = quantity / serving_weight if serving_weight > 0 else quantity / 100
+                    
+                    update_data['nutrition'] = {
+                        'calories': round(float(food.get('calories', 0)) * multiplier),
+                        'protein': round(float(food.get('protein', 0)) * multiplier, 1),
+                        'carbs': round(float(food.get('carbs', 0)) * multiplier, 1),
+                        'fat': round(float(food.get('fat', 0)) * multiplier, 1),
+                        'fiber': round(float(food.get('fiber', 0)) * multiplier, 1),
+                        'sugar': round(float(food.get('sugar', 0)) * multiplier, 1),
+                        'sodium': round(float(food.get('sodium', 0)) * multiplier, 1),
+                    }
+            except Exception as e:
+                current_app.logger.error(f'Error recalculating nutrition: {e}')
+        
         if 'mealType' in data:
             update_data['meal_type'] = data['mealType']
         
@@ -256,27 +373,49 @@ def summary():
         # Get logs from MongoDB
         food_logs_collection = current_app.mongo_db.user_food_logs
         
-        logs = list(food_logs_collection.find({
-            'user_id': user_id,
-            'logged_at': {
-                '$gte': start_date,
-                '$lte': end_date
+        # Use aggregation for faster calculation - get totals and count in one query
+        totals_pipeline = [
+            {'$match': {
+                'user_id': user_id,
+                'logged_at': {
+                    '$gte': start_date,
+                    '$lte': end_date
+                }
+            }},
+            {'$group': {
+                '_id': None,
+                'calories': {'$sum': '$nutrition.calories'},
+                'protein': {'$sum': '$nutrition.protein'},
+                'carbs': {'$sum': '$nutrition.carbs'},
+                'fat': {'$sum': '$nutrition.fat'},
+                'fiber': {'$sum': '$nutrition.fiber'},
+                'sugar': {'$sum': '$nutrition.sugar'},
+                'sodium': {'$sum': '$nutrition.sodium'},
+                'count': {'$sum': 1}
+            }}
+        ]
+        totals_result = list(food_logs_collection.aggregate(totals_pipeline))
+        if totals_result:
+            totals = {
+                'calories': round(totals_result[0].get('calories', 0)),
+                'protein': round(totals_result[0].get('protein', 0), 1),
+                'carbs': round(totals_result[0].get('carbs', 0), 1),
+                'fat': round(totals_result[0].get('fat', 0), 1),
+                'fiber': round(totals_result[0].get('fiber', 0), 1),
+                'sugar': round(totals_result[0].get('sugar', 0), 1),
+                'sodium': round(totals_result[0].get('sodium', 0), 1)
             }
-        }))
-        
-        totals = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat': 0, 'fiber': 0, 'sugar': 0, 'sodium': 0}
-        
-        for log in logs:
-            nutrition = log.get('nutrition', {})
-            for k in totals:
-                totals[k] += nutrition.get(k, 0)
+            total_logs = totals_result[0].get('count', 0)
+        else:
+            totals = {'calories': 0, 'protein': 0, 'carbs': 0, 'fat': 0, 'fiber': 0, 'sugar': 0, 'sodium': 0}
+            total_logs = 0
         
         return jsonify({
             'success': True, 
             'data': {
                 'date': target.strftime('%Y-%m-%d'),
                 'totalNutrition': {k: (round(v) if k == 'calories' else round(v, 1)) for k, v in totals.items()},
-                'totalLogs': len(logs),
+                'totalLogs': total_logs,
             }
         })
     except Exception as e:

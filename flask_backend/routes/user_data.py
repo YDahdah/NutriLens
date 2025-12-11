@@ -4,7 +4,10 @@ from routes.auth import verify_token
 from collections import defaultdict
 import base64
 import os
+import re
 
+# Compile regex patterns once for better performance
+NUMBER_PATTERN = re.compile(r'\d+\.?\d*')
 
 user_data_bp = Blueprint('user_data', __name__)
 
@@ -20,7 +23,6 @@ def _require_user_id():
     return decoded.get('userId'), None
 
 
-# Profile photo routes must be defined BEFORE /profile routes to avoid routing conflicts
 @user_data_bp.get('/profile/photo')
 def get_profile_photo():
     user_id, err = _require_user_id()
@@ -48,50 +50,37 @@ def upload_profile_photo():
         if file.filename == '':
             return jsonify({'success': False, 'message': 'No file selected'}), 400
         
-        # Validate file type - be extremely permissive, only reject clearly non-image files
-        # Accept any file with image extension, image/* content type, or unknown type (rely on size limit)
         clearly_not_image_extensions = {'exe', 'dll', 'bat', 'cmd', 'sh', 'zip', 'rar', '7z', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'json', 'xml', 'html', 'css', 'js', 'py', 'java', 'cpp', 'c', 'h'}
         
-        # Check file extension
         file_ext = ''
         filename_lower = (file.filename or '').lower()
         if '.' in filename_lower:
             file_ext = filename_lower.rsplit('.', 1)[1].lower()
         
-        # Check content type - handle None and empty strings
         raw_content_type = file.content_type or ''
         content_type = raw_content_type.lower().strip()
         
-        # Debug logging
-        print(f"File upload validation - filename: {file.filename}, ext: {file_ext}, content_type: {raw_content_type}")
-        
-        # Reject only if we're CERTAIN it's not an image:
-        # 1. Has a clearly non-image extension (like .exe, .pdf, etc.)
-        # 2. AND has a clearly non-image content type (not image/*, not empty, not application/octet-stream)
         is_clearly_not_image_ext = file_ext in clearly_not_image_extensions
         is_clearly_not_image_mime = (
             content_type and 
             not content_type.startswith('image/') and 
             content_type != 'application/octet-stream' and
-            not content_type.startswith('application/x-')  # Some image formats use this
+            not content_type.startswith('application/x-')
         )
         
-        # Only reject if BOTH extension and mime type clearly indicate it's not an image
         if is_clearly_not_image_ext and is_clearly_not_image_mime:
             return jsonify({
                 'success': False, 
                 'message': f'Invalid file type. Please upload an image file (PNG, JPG, JPEG, GIF, WEBP, etc.). Got: {file_ext or "unknown"} ({raw_content_type or "unknown"})'
             }), 400
         
-        # Read and convert to base64
         image_bytes = file.read()
-        if len(image_bytes) > 5 * 1024 * 1024:  # 5MB limit
+        if len(image_bytes) > 5 * 1024 * 1024:
             return jsonify({'success': False, 'message': 'File too large. Maximum size is 5MB'}), 400
         
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
         data_url = f"data:{file.content_type};base64,{image_b64}"
         
-        # Store in user profile
         coll = current_app.mongo_db.user_profiles
         coll.update_one(
             {'userId': user_id},
@@ -106,26 +95,6 @@ def upload_profile_photo():
 
 @user_data_bp.route('/profile/photo', methods=['DELETE'])
 def delete_profile_photo():
-    user_id, err = _require_user_id()
-    if err:
-        return err
-    try:
-        coll = current_app.mongo_db.user_profiles
-        coll.update_one(
-            {'userId': user_id},
-            {
-                '$unset': {'profilePhoto': ''},
-                '$set': {'updated_at': datetime.utcnow()}
-            },
-            upsert=False
-        )
-        return jsonify({'success': True, 'message': 'Profile photo removed'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Error deleting photo: {str(e)}'}), 500
-
-
-@user_data_bp.post('/profile/photo/remove')
-def remove_profile_photo():
     user_id, err = _require_user_id()
     if err:
         return err
@@ -175,7 +144,6 @@ def get_goals_today():
     user_id, err = _require_user_id()
     if err:
         return err
-    # Persist goals across days: store a single document per user
     coll = current_app.mongo_db.user_goals
     doc = coll.find_one({'userId': user_id})
     goals = doc.get('goals') if doc else None
@@ -188,7 +156,6 @@ def put_goals_today():
     if err:
         return err
     data = request.get_json(silent=True) or {}
-    # Persist goals forever until changed
     coll = current_app.mongo_db.user_goals
     coll.update_one(
         {'userId': user_id},
@@ -227,7 +194,6 @@ def save_meals_today():
     return jsonify({'success': True})
 
 
-# Get meals for a specific date (YYYY-MM-DD)
 @user_data_bp.get('/meals/by-date')
 def get_meals_by_date():
     user_id, err = _require_user_id()
@@ -242,7 +208,6 @@ def get_meals_by_date():
     return jsonify({'success': True, 'data': {'date': date_str, 'meals': meals}})
 
 
-# Append a meal entry to a specific date's history (defaults to today)
 @user_data_bp.post('/meals/add')
 def add_meal_entry():
     user_id, err = _require_user_id()
@@ -253,7 +218,6 @@ def add_meal_entry():
     date_str = body.get('date') or datetime.utcnow().strftime('%Y-%m-%d')
     if not meal or not isinstance(meal, dict):
         return jsonify({'success': False, 'message': 'meal object is required'}), 400
-    # Basic normalization: ensure a timestamp exists
     if 'loggedAt' not in meal:
         meal['loggedAt'] = datetime.utcnow().isoformat()
     coll = current_app.mongo_db.daily_meals
@@ -269,7 +233,6 @@ def add_meal_entry():
     return jsonify({'success': True, 'message': 'Meal added', 'data': {'date': date_str}})
 
 
-# Get all dates with meals (history)
 @user_data_bp.get('/meals/history')
 def get_meals_history():
     user_id, err = _require_user_id()
@@ -278,7 +241,6 @@ def get_meals_history():
     try:
         limit = request.args.get('limit', type=int) or 30  # Default to last 30 days
         coll = current_app.mongo_db.daily_meals
-        # Get all documents for this user, sorted by date descending
         docs = list(coll.find(
             {'userId': user_id},
             {'date': 1, 'meals': 1, 'created_at': 1, 'updated_at': 1}
@@ -288,7 +250,6 @@ def get_meals_history():
         for doc in docs:
             date_str = doc.get('date')
             meals = doc.get('meals', [])
-            # Calculate totals for the day
             total_calories = sum(m.get('totalCalories', 0) for m in meals)
             total_protein = sum(m.get('totalProtein', 0) for m in meals)
             total_carbs = sum(m.get('totalCarbs', 0) for m in meals)
@@ -316,7 +277,6 @@ def get_meals_history():
         return jsonify({'success': False, 'message': f'Error getting history: {str(e)}'}), 500
 
 
-# Delete meals for a specific date
 @user_data_bp.route('/meals/delete', methods=['DELETE'])
 def delete_meals_by_date():
     user_id, err = _require_user_id()
@@ -342,7 +302,6 @@ def delete_meals_by_date():
         return jsonify({'success': False, 'message': f'Error deleting day: {str(e)}'}), 500
 
 
-# Get weekly report
 @user_data_bp.get('/reports/weekly')
 def get_weekly_report():
     user_id, err = _require_user_id()
@@ -380,13 +339,17 @@ def get_weekly_report():
             {'date': 1, 'activity': 1}
         ).sort('date', 1))
         
+        # Create lookup dictionaries for O(1) access
+        meals_dict = {doc.get('date'): doc for doc in meals_docs}
+        activity_dict = {doc.get('date'): doc for doc in activity_docs}
+        
         # Create data points for each day
         report_data = []
         for i in range(7):
             current_date = start_date + timedelta(days=i)
             date_str = current_date.strftime('%Y-%m-%d')
-            meals_doc = next((d for d in meals_docs if d.get('date') == date_str), None)
-            activity_doc = next((d for d in activity_docs if d.get('date') == date_str), None)
+            meals_doc = meals_dict.get(date_str)
+            activity_doc = activity_dict.get(date_str)
             
             if meals_doc:
                 meals = meals_doc.get('meals', [])
@@ -400,7 +363,6 @@ def get_weekly_report():
                 total_carbs = 0
                 total_fat = 0
             
-            # Get activity data
             if activity_doc:
                 activity = activity_doc.get('activity', {})
                 exercises = activity.get('exercises', [])
@@ -427,7 +389,6 @@ def get_weekly_report():
                 'waterIntake': round(water_intake, 1)
             })
         
-        # Calculate averages
         total_cal = sum(d['calories'] for d in report_data)
         total_prot = sum(d['protein'] for d in report_data)
         total_carb = sum(d['carbs'] for d in report_data)
@@ -470,7 +431,6 @@ def get_weekly_report():
         return jsonify({'success': False, 'message': f'Error getting weekly report: {str(e)}'}), 500
 
 
-# Get monthly report
 @user_data_bp.get('/reports/monthly')
 def get_monthly_report():
     user_id, err = _require_user_id()
@@ -508,7 +468,7 @@ def get_monthly_report():
             {'date': 1, 'activity': 1}
         ).sort('date', 1))
         
-        # Group by week
+        # Group by week - optimize date parsing
         weekly_data = defaultdict(lambda: {
             'calories': 0,
             'protein': 0,
@@ -518,42 +478,51 @@ def get_monthly_report():
             'caloriesBurned': 0,
             'exerciseDuration': 0,
             'waterIntake': 0,
-            'days': []
+            'days': set()  # Use set for faster lookups
         })
         
+        # Process meals - cache date parsing
         for meals_doc in meals_docs:
             date_str = meals_doc.get('date')
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-            week_num = (date_obj - start_date).days // 7
-            
-            meals = meals_doc.get('meals', [])
-            total_calories = sum(m.get('totalCalories', 0) for m in meals)
-            total_protein = sum(m.get('totalProtein', 0) for m in meals)
-            total_carbs = sum(m.get('totalCarbs', 0) for m in meals)
-            total_fat = sum(m.get('totalFat', 0) for m in meals)
-            
-            weekly_data[week_num]['calories'] += total_calories
-            weekly_data[week_num]['protein'] += total_protein
-            weekly_data[week_num]['carbs'] += total_carbs
-            weekly_data[week_num]['fat'] += total_fat
-            weekly_data[week_num]['mealsCount'] += len(meals)
-            weekly_data[week_num]['days'].append(date_str)
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    week_num = (date_obj - start_date).days // 7
+                    
+                    meals = meals_doc.get('meals', [])
+                    total_calories = sum(m.get('totalCalories', 0) for m in meals)
+                    total_protein = sum(m.get('totalProtein', 0) for m in meals)
+                    total_carbs = sum(m.get('totalCarbs', 0) for m in meals)
+                    total_fat = sum(m.get('totalFat', 0) for m in meals)
+                    
+                    weekly_data[week_num]['calories'] += total_calories
+                    weekly_data[week_num]['protein'] += total_protein
+                    weekly_data[week_num]['carbs'] += total_carbs
+                    weekly_data[week_num]['fat'] += total_fat
+                    weekly_data[week_num]['mealsCount'] += len(meals)
+                    weekly_data[week_num]['days'].add(date_str)
+                except (ValueError, TypeError):
+                    continue
         
-        # Add activity data
+        # Add activity data - cache date parsing
         for activity_doc in activity_docs:
             date_str = activity_doc.get('date')
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-            week_num = (date_obj - start_date).days // 7
-            
-            activity = activity_doc.get('activity', {})
-            exercises = activity.get('exercises', [])
-            water_intake = activity.get('waterIntake', 0)
-            total_calories_burned = sum(e.get('caloriesBurned', 0) for e in exercises)
-            total_exercise_duration = sum(e.get('duration', 0) for e in exercises)
-            
-            weekly_data[week_num]['caloriesBurned'] += total_calories_burned
-            weekly_data[week_num]['exerciseDuration'] += total_exercise_duration
-            weekly_data[week_num]['waterIntake'] += water_intake
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                    week_num = (date_obj - start_date).days // 7
+                    
+                    activity = activity_doc.get('activity', {})
+                    exercises = activity.get('exercises', [])
+                    water_intake = activity.get('waterIntake', 0)
+                    total_calories_burned = sum(e.get('caloriesBurned', 0) for e in exercises)
+                    total_exercise_duration = sum(e.get('duration', 0) for e in exercises)
+                    
+                    weekly_data[week_num]['caloriesBurned'] += total_calories_burned
+                    weekly_data[week_num]['exerciseDuration'] += total_exercise_duration
+                    weekly_data[week_num]['waterIntake'] += water_intake
+                except (ValueError, TypeError):
+                    continue
         
         # Create report data for 4 weeks
         report_data = []
@@ -572,7 +541,7 @@ def get_monthly_report():
                 'carbs': round(week_data['carbs'], 1),
                 'fat': round(week_data['fat'], 1),
                 'mealsCount': week_data['mealsCount'],
-                'daysTracked': len(week_data['days']),
+                'daysTracked': len(week_data['days']) if isinstance(week_data['days'], set) else len(week_data['days']),
                 'caloriesBurned': round(week_data['caloriesBurned'], 1),
                 'exerciseDuration': round(week_data['exerciseDuration'], 1),
                 'waterIntake': round(week_data['waterIntake'], 1)
@@ -620,7 +589,6 @@ def get_monthly_report():
         return jsonify({'success': False, 'message': f'Error getting monthly report: {str(e)}'}), 500
 
 
-# Get yearly report
 @user_data_bp.get('/reports/yearly')
 def get_yearly_report():
     user_id, err = _require_user_id()
@@ -658,7 +626,7 @@ def get_yearly_report():
             {'date': 1, 'activity': 1}
         ).sort('date', 1))
         
-        # Group by month
+        # Group by month - use dictionaries for O(1) lookup
         monthly_data = defaultdict(lambda: {
             'calories': 0,
             'protein': 0,
@@ -668,42 +636,52 @@ def get_yearly_report():
             'caloriesBurned': 0,
             'exerciseDuration': 0,
             'waterIntake': 0,
-            'days': []
+            'days': set()  # Use set for faster lookups
         })
         
+        # Process meals - cache date parsing
         for meals_doc in meals_docs:
             date_str = meals_doc.get('date')
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-            month_key = date_obj.strftime('%Y-%m')
-            
-            meals = meals_doc.get('meals', [])
-            total_calories = sum(m.get('totalCalories', 0) for m in meals)
-            total_protein = sum(m.get('totalProtein', 0) for m in meals)
-            total_carbs = sum(m.get('totalCarbs', 0) for m in meals)
-            total_fat = sum(m.get('totalFat', 0) for m in meals)
-            
-            monthly_data[month_key]['calories'] += total_calories
-            monthly_data[month_key]['protein'] += total_protein
-            monthly_data[month_key]['carbs'] += total_carbs
-            monthly_data[month_key]['fat'] += total_fat
-            monthly_data[month_key]['mealsCount'] += len(meals)
-            monthly_data[month_key]['days'].append(date_str)
+            # Parse date once and reuse
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    month_key = date_obj.strftime('%Y-%m')
+                    
+                    meals = meals_doc.get('meals', [])
+                    total_calories = sum(m.get('totalCalories', 0) for m in meals)
+                    total_protein = sum(m.get('totalProtein', 0) for m in meals)
+                    total_carbs = sum(m.get('totalCarbs', 0) for m in meals)
+                    total_fat = sum(m.get('totalFat', 0) for m in meals)
+                    
+                    monthly_data[month_key]['calories'] += total_calories
+                    monthly_data[month_key]['protein'] += total_protein
+                    monthly_data[month_key]['carbs'] += total_carbs
+                    monthly_data[month_key]['fat'] += total_fat
+                    monthly_data[month_key]['mealsCount'] += len(meals)
+                    monthly_data[month_key]['days'].add(date_str)
+                except (ValueError, TypeError):
+                    continue
         
-        # Add activity data
+        # Add activity data - cache date parsing
         for activity_doc in activity_docs:
             date_str = activity_doc.get('date')
-            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-            month_key = date_obj.strftime('%Y-%m')
-            
-            activity = activity_doc.get('activity', {})
-            exercises = activity.get('exercises', [])
-            water_intake = activity.get('waterIntake', 0)
-            total_calories_burned = sum(e.get('caloriesBurned', 0) for e in exercises)
-            total_exercise_duration = sum(e.get('duration', 0) for e in exercises)
-            
-            monthly_data[month_key]['caloriesBurned'] += total_calories_burned
-            monthly_data[month_key]['exerciseDuration'] += total_exercise_duration
-            monthly_data[month_key]['waterIntake'] += water_intake
+            if date_str:
+                try:
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    month_key = date_obj.strftime('%Y-%m')
+                    
+                    activity = activity_doc.get('activity', {})
+                    exercises = activity.get('exercises', [])
+                    water_intake = activity.get('waterIntake', 0)
+                    total_calories_burned = sum(e.get('caloriesBurned', 0) for e in exercises)
+                    total_exercise_duration = sum(e.get('duration', 0) for e in exercises)
+                    
+                    monthly_data[month_key]['caloriesBurned'] += total_calories_burned
+                    monthly_data[month_key]['exerciseDuration'] += total_exercise_duration
+                    monthly_data[month_key]['waterIntake'] += water_intake
+                except (ValueError, TypeError):
+                    continue
         
         # Create report data for last 12 months
         report_data = []
@@ -721,7 +699,7 @@ def get_yearly_report():
                 'carbs': round(month_data['carbs'], 1),
                 'fat': round(month_data['fat'], 1),
                 'mealsCount': month_data['mealsCount'],
-                'daysTracked': len(month_data['days']),
+                'daysTracked': len(month_data['days']) if isinstance(month_data['days'], set) else len(month_data['days']),
                 'caloriesBurned': round(month_data['caloriesBurned'], 1),
                 'exerciseDuration': round(month_data['exerciseDuration'], 1),
                 'waterIntake': round(month_data['waterIntake'], 1)
@@ -769,7 +747,6 @@ def get_yearly_report():
         return jsonify({'success': False, 'message': f'Error getting yearly report: {str(e)}'}), 500
 
 
-# Exercise and Water Tracking Routes
 
 @user_data_bp.get('/activity/today')
 def get_activity_today():
@@ -778,6 +755,11 @@ def get_activity_today():
     if err:
         return err
     try:
+        # Ensure mongo_db is available
+        if not hasattr(current_app, 'mongo_db') or current_app.mongo_db is None:
+            current_app.logger.error('MongoDB connection not available')
+            return jsonify({'success': False, 'message': 'Database connection error'}), 500
+        
         coll = current_app.mongo_db.daily_activity
         key = datetime.utcnow().strftime('%Y-%m-%d')
         doc = coll.find_one({'userId': user_id, 'date': key})
@@ -785,22 +767,46 @@ def get_activity_today():
             activity = doc.get('activity', {})
             exercises = activity.get('exercises', [])
             
-            # Recalculate calories for exercises with 0 calories but valid name and duration
+            # Ensure exercises is a list
+            if not isinstance(exercises, list):
+                exercises = []
+            
+            # Get water intake and ensure it's included in response
+            water_intake = activity.get('waterIntake', 0)
+            try:
+                if water_intake is not None:
+                    water_intake = float(water_intake)
+                else:
+                    water_intake = 0
+            except (ValueError, TypeError):
+                water_intake = 0
+            
             needs_update = False
             for exercise in exercises:
+                # Ensure exercise is a dict
+                if not isinstance(exercise, dict):
+                    continue
+                    
                 calories_burned = exercise.get('caloriesBurned', 0)
                 exercise_name = exercise.get('name', '').strip()
                 duration = exercise.get('duration', 0)
                 
-                # Recalculate if calories are 0 or missing, and we have name and duration
+                # Ensure duration is a number
+                try:
+                    duration = float(duration) if duration else 0
+                except (ValueError, TypeError):
+                    duration = 0
+                
                 if (calories_burned <= 0 and exercise_name and duration > 0):
-                    # Calculate calories using fallback
-                    calculated_calories = _estimate_calories_fallback(exercise_name, duration)
-                    if calculated_calories > 0:
-                        exercise['caloriesBurned'] = calculated_calories
-                        needs_update = True
+                    try:
+                        calculated_calories = _estimate_calories_fallback(exercise_name, duration)
+                        if calculated_calories > 0:
+                            exercise['caloriesBurned'] = calculated_calories
+                            needs_update = True
+                    except Exception as e:
+                        current_app.logger.warning(f'Error estimating calories for {exercise_name}: {str(e)}')
+                        continue
             
-            # Update database if any calories were recalculated
             if needs_update:
                 coll.update_one(
                     {'userId': user_id, 'date': key},
@@ -812,14 +818,19 @@ def get_activity_today():
                     }
                 )
             
-            activity['exercises'] = exercises
+            # Ensure both exercises and waterIntake are included in response
+            activity = {
+                'exercises': exercises,
+                'waterIntake': water_intake
+            }
         else:
             activity = {
                 'exercises': [],
-                'waterIntake': 0  # in ml
+                'waterIntake': 0
             }
         return jsonify({'success': True, 'data': activity})
     except Exception as e:
+        current_app.logger.error(f'Error getting activity for user {user_id}: {str(e)}', exc_info=True)
         return jsonify({'success': False, 'message': f'Error getting activity: {str(e)}'}), 500
 
 
@@ -832,7 +843,26 @@ def save_activity_today():
     try:
         data = request.get_json(silent=True) or {}
         exercises = data.get('exercises', [])
-        water_intake = data.get('waterIntake', 0)
+        water_intake = float(data.get('waterIntake', 0))
+        
+        # Validate water intake: minimum 0L, maximum 5L (5000ml)
+        if water_intake < 0:
+            return jsonify({'success': False, 'message': 'Water intake cannot be negative. Minimum is 0L.'}), 400
+        if water_intake > 5000:
+            return jsonify({'success': False, 'message': 'Water intake cannot exceed 5L (5000ml). Maximum is 5L.'}), 400
+        
+        # Validate exercise durations: maximum 1400 minutes per exercise
+        for exercise in exercises:
+            duration = exercise.get('duration', 0)
+            try:
+                duration = float(duration) if duration else 0
+            except (ValueError, TypeError):
+                duration = 0
+            
+            if duration < 0:
+                return jsonify({'success': False, 'message': 'Exercise duration cannot be negative'}), 400
+            if duration > 1400:
+                return jsonify({'success': False, 'message': 'Exercise duration cannot exceed 1400 minutes'}), 400
         
         coll = current_app.mongo_db.daily_activity
         key = datetime.utcnow().strftime('%Y-%m-%d')
@@ -842,7 +872,7 @@ def save_activity_today():
                 '$set': {
                     'activity': {
                         'exercises': exercises,
-                        'waterIntake': float(water_intake)
+                        'waterIntake': water_intake
                     },
                     'updated_at': datetime.utcnow()
                 },
@@ -864,10 +894,18 @@ def add_exercise():
     try:
         data = request.get_json(silent=True) or {}
         exercise_name = data.get('name', '').strip()
-        duration = float(data.get('duration', 0))  # in minutes
+        duration = float(data.get('duration', 0))
         calories_burned = float(data.get('caloriesBurned', 0))
         
-        # If calories are 0 or not provided, automatically calculate them using fallback
+        if duration < 0:
+            return jsonify({'success': False, 'message': 'Duration cannot be negative'}), 400
+        
+        if duration > 1400:
+            return jsonify({'success': False, 'message': 'Duration cannot exceed 1400 minutes'}), 400
+        
+        if calories_burned < 0:
+            return jsonify({'success': False, 'message': 'Calories burned cannot be negative'}), 400
+        
         if calories_burned <= 0 and exercise_name and duration > 0:
             calories_burned = _estimate_calories_fallback(exercise_name, duration)
         
@@ -886,7 +924,6 @@ def add_exercise():
         coll = current_app.mongo_db.daily_activity
         key = datetime.utcnow().strftime('%Y-%m-%d')
         
-        # Ensure the document exists with proper structure before pushing
         coll.update_one(
             {'userId': user_id, 'date': key},
             {
@@ -898,7 +935,6 @@ def add_exercise():
             upsert=True
         )
         
-        # Now push the exercise
         coll.update_one(
             {'userId': user_id, 'date': key},
             {
@@ -920,6 +956,12 @@ def update_water_intake():
     try:
         data = request.get_json(silent=True) or {}
         water_intake = float(data.get('waterIntake', 0))
+        
+        # Validate water intake: minimum 0L, maximum 5L (5000ml)
+        if water_intake < 0:
+            return jsonify({'success': False, 'message': 'Water intake cannot be negative. Minimum is 0L.'}), 400
+        if water_intake > 5000:
+            return jsonify({'success': False, 'message': 'Water intake cannot exceed 5L (5000ml). Maximum is 5L.'}), 400
         
         coll = current_app.mongo_db.daily_activity
         key = datetime.utcnow().strftime('%Y-%m-%d')
@@ -969,7 +1011,6 @@ def delete_exercise(exercise_index: int):
         if exercise_index < 0 or exercise_index >= len(exercises):
             return jsonify({'success': False, 'message': 'Invalid exercise index'}), 400
         
-        # Remove the exercise at the specified index
         exercises.pop(exercise_index)
         
         coll.update_one(
@@ -1031,6 +1072,18 @@ def get_activity_history():
         return jsonify({'success': False, 'message': f'Error getting activity history: {str(e)}'}), 500
 
 
+_COMMON_EXERCISES = [
+    'Running', 'Jogging', 'Walking', 'Cycling', 'Swimming', 'Rowing',
+    'Weight Lifting', 'Bench Press', 'Squats', 'Deadlifts', 'Pull-ups',
+    'Push-ups', 'Sit-ups', 'Crunches', 'Plank', 'Burpees', 'Jumping Jacks',
+    'Yoga', 'Pilates', 'Stretching', 'Dancing', 'Zumba', 'Aerobics',
+    'HIIT', 'CrossFit', 'Boxing', 'Martial Arts', 'Tennis', 'Basketball',
+    'Soccer', 'Football', 'Volleyball', 'Badminton', 'Table Tennis',
+    'Hiking', 'Climbing', 'Skating', 'Skiing', 'Snowboarding',
+    'Elliptical', 'Treadmill', 'Stair Climbing', 'Rowing Machine',
+    'Kettlebell', 'Dumbbells', 'Resistance Training', 'Circuit Training'
+]
+
 @user_data_bp.get('/activity/exercise/suggestions')
 def get_exercise_suggestions():
     """Get exercise name suggestions based on query"""
@@ -1038,21 +1091,8 @@ def get_exercise_suggestions():
     if not query or len(query) < 2:
         return jsonify({'success': True, 'data': []})
     
-    # Common exercise names database
-    common_exercises = [
-        'Running', 'Jogging', 'Walking', 'Cycling', 'Swimming', 'Rowing',
-        'Weight Lifting', 'Bench Press', 'Squats', 'Deadlifts', 'Pull-ups',
-        'Push-ups', 'Sit-ups', 'Crunches', 'Plank', 'Burpees', 'Jumping Jacks',
-        'Yoga', 'Pilates', 'Stretching', 'Dancing', 'Zumba', 'Aerobics',
-        'HIIT', 'CrossFit', 'Boxing', 'Martial Arts', 'Tennis', 'Basketball',
-        'Soccer', 'Football', 'Volleyball', 'Badminton', 'Table Tennis',
-        'Hiking', 'Climbing', 'Skating', 'Skiing', 'Snowboarding',
-        'Elliptical', 'Treadmill', 'Stair Climbing', 'Rowing Machine',
-        'Kettlebell', 'Dumbbells', 'Resistance Training', 'Circuit Training'
-    ]
-    
-    # Filter exercises that match the query
-    suggestions = [ex for ex in common_exercises if query in ex.lower()]
+    # Filter exercises that match the query - use cached list
+    suggestions = [ex for ex in _COMMON_EXERCISES if query in ex.lower()]
     
     # Limit to 10 suggestions
     return jsonify({'success': True, 'data': suggestions[:10]})
@@ -1076,7 +1116,6 @@ def estimate_calories_burned():
         if duration_minutes <= 0:
             return jsonify({'success': False, 'message': 'Duration must be greater than 0'}), 400
         
-        # Use the chat API to estimate calories
         import json
         import urllib.request as urllib_request
         import urllib.error as urllib_error
@@ -1125,12 +1164,9 @@ Respond with ONLY the number, no explanation or units."""
                 if 'choices' in result and len(result['choices']) > 0:
                     response_text = result['choices'][0].get('message', {}).get('content', '').strip()
                     
-                    # Extract number from response
-                    import re
-                    numbers = re.findall(r'\d+\.?\d*', response_text)
+                    numbers = NUMBER_PATTERN.findall(response_text)
                     if numbers:
                         estimated_calories = float(numbers[0])
-                        # Ensure reasonable range (0-2000 calories for the duration)
                         estimated_calories = max(0, min(estimated_calories, 2000))
                         return jsonify({
                             'success': True,
@@ -1141,7 +1177,6 @@ Respond with ONLY the number, no explanation or units."""
                             }
                         })
             
-            # Fallback if AI response parsing fails
             estimated_calories = _estimate_calories_fallback(exercise_name, duration_minutes)
             return jsonify({
                 'success': True,
@@ -1154,7 +1189,6 @@ Respond with ONLY the number, no explanation or units."""
             })
         except Exception as e:
             current_app.logger.warning(f'AI calorie estimation failed: {str(e)}, using fallback')
-            # Fallback to basic estimation if AI call fails
             estimated_calories = _estimate_calories_fallback(exercise_name, duration_minutes)
             return jsonify({
                 'success': True,
@@ -1169,35 +1203,48 @@ Respond with ONLY the number, no explanation or units."""
         return jsonify({'success': False, 'message': f'Error estimating calories: {str(e)}'}), 500
 
 
+_MET_VALUES = {
+    'running': 11.5, 'jogging': 7.0, 'walking': 3.5, 'cycling': 8.0,
+    'swimming': 8.0, 'rowing': 7.0, 'weight': 6.0, 'lifting': 6.0,
+    'bench': 6.0, 'squats': 5.5, 'deadlift': 6.0, 'pull': 8.0,
+    'push': 8.0, 'sit': 3.0, 'crunch': 3.0, 'plank': 3.5,
+    'burpee': 10.0, 'jumping': 8.0, 'yoga': 3.0, 'pilates': 3.0,
+    'stretching': 2.5, 'dancing': 6.0, 'zumba': 7.0, 'aerobics': 7.0,
+    'hiit': 10.0, 'crossfit': 10.0, 'boxing': 12.0, 'martial': 10.0,
+    'tennis': 8.0, 'basketball': 8.0, 'soccer': 10.0, 'football': 8.0,
+    'volleyball': 3.0, 'badminton': 5.5, 'hiking': 6.0, 'climbing': 8.0,
+    'skating': 7.0, 'skiing': 7.0, 'elliptical': 7.0, 'treadmill': 7.0,
+    'stair': 9.0, 'kettlebell': 8.0, 'dumbbell': 6.0, 'resistance': 6.0,
+    'circuit': 8.0
+}
+
 def _estimate_calories_fallback(exercise_name: str, duration_minutes: float) -> float:
     """Fallback calorie estimation using MET values (for average 70kg person)"""
-    exercise_lower = exercise_name.lower()
-    
-    # MET values (calories per minute for 70kg person)
-    met_values = {
-        'running': 11.5, 'jogging': 7.0, 'walking': 3.5, 'cycling': 8.0,
-        'swimming': 8.0, 'rowing': 7.0, 'weight': 6.0, 'lifting': 6.0,
-        'bench': 6.0, 'squats': 5.5, 'deadlift': 6.0, 'pull': 8.0,
-        'push': 8.0, 'sit': 3.0, 'crunch': 3.0, 'plank': 3.5,
-        'burpee': 10.0, 'jumping': 8.0, 'yoga': 3.0, 'pilates': 3.0,
-        'stretching': 2.5, 'dancing': 6.0, 'zumba': 7.0, 'aerobics': 7.0,
-        'hiit': 10.0, 'crossfit': 10.0, 'boxing': 12.0, 'martial': 10.0,
-        'tennis': 8.0, 'basketball': 8.0, 'soccer': 10.0, 'football': 8.0,
-        'volleyball': 3.0, 'badminton': 5.5, 'hiking': 6.0, 'climbing': 8.0,
-        'skating': 7.0, 'skiing': 7.0, 'elliptical': 7.0, 'treadmill': 7.0,
-        'stair': 9.0, 'kettlebell': 8.0, 'dumbbell': 6.0, 'resistance': 6.0,
-        'circuit': 8.0
-    }
-    
-    # Find matching MET value
-    met = 5.0  # Default moderate intensity
-    for key, value in met_values.items():
-        if key in exercise_lower:
-            met = value
-            break
-    
-    # Calories = MET × weight(kg) × time(hours)
-    # For 70kg person: Calories = MET × 70 × (minutes/60)
-    calories = met * 70 * (duration_minutes / 60)
-    
-    return round(calories, 1)
+    try:
+        # Ensure exercise_name is a string
+        if not isinstance(exercise_name, str):
+            exercise_name = str(exercise_name) if exercise_name else 'exercise'
+        
+        # Ensure duration is a valid number
+        try:
+            duration_minutes = float(duration_minutes)
+        except (ValueError, TypeError):
+            duration_minutes = 0.0
+        
+        if duration_minutes <= 0:
+            return 0.0
+        
+        exercise_lower = exercise_name.lower()
+        
+        met = 5.0
+        for key, value in _MET_VALUES.items():
+            if key in exercise_lower:
+                met = value
+                break
+        
+        calories = met * 70 * (duration_minutes / 60)
+        
+        return round(calories, 1)
+    except Exception as e:
+        # Return 0 if any error occurs
+        return 0.0

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Brain, LogOut, User, MessageCircle, Calculator, Database, AlertTriangle, Lock, BarChart3, Camera, Mail, Loader2, Trash2, Activity, Shield, Menu } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -22,6 +22,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { apiClient } from "@/utils/apiClient";
+import { logger } from "@/utils/logger";
 
 const Navigation = () => {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -36,28 +37,20 @@ const Navigation = () => {
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isRemovingPhoto, setIsRemovingPhoto] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const userDataService = UserDataService.getInstance();
+  // Use useMemo to ensure stable reference for singleton
+  const userDataService = useMemo(() => UserDataService.getInstance(), []);
+  const hasLoadedProfileRef = useRef(false);
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      loadProfilePhoto();
-      loadUserEmail();
-    } else {
-      setProfilePhoto(null);
-      setUserEmail('');
-    }
-  }, [isAuthenticated]);
-  
-  const loadProfilePhoto = async () => {
+  const loadProfilePhoto = useCallback(async () => {
     try {
       const photoUrl = await userDataService.getProfilePhoto();
       setProfilePhoto(photoUrl);
     } catch (error) {
-      console.error('Failed to load profile photo:', error);
+      logger.error('Failed to load profile photo:', error);
     }
-  };
+  }, [userDataService]);
 
-  const loadUserEmail = async () => {
+  const loadUserEmail = useCallback(async () => {
     try {
       // Check if user is authenticated and token exists before making request
       const token = localStorage.getItem('nutriai_token');
@@ -77,9 +70,22 @@ const Navigation = () => {
         return;
       }
       // Only log non-401 errors
-      console.error('Failed to load user email:', error);
+      logger.error('Failed to load user email:', error);
     }
-  };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated && !hasLoadedProfileRef.current) {
+      hasLoadedProfileRef.current = true;
+      loadProfilePhoto();
+      loadUserEmail();
+    } else if (!isAuthenticated) {
+      hasLoadedProfileRef.current = false;
+      setProfilePhoto(null);
+      setUserEmail('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]); // loadProfilePhoto and loadUserEmail are stable callbacks
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -128,7 +134,7 @@ const Navigation = () => {
         });
       }
     } catch (error) {
-      console.error('Failed to upload photo:', error);
+      logger.error('Failed to upload photo:', error);
       toast({
         title: 'Error',
         description: 'Failed to upload photo. Please try again.',
@@ -161,7 +167,7 @@ const Navigation = () => {
         });
       }
     } catch (error) {
-      console.error('Failed to delete photo:', error);
+      logger.error('Failed to delete photo:', error);
       toast({
         title: 'Error',
         description: 'Failed to remove photo. Please try again.',

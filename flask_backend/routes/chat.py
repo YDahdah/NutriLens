@@ -6,11 +6,17 @@ from typing import Dict, List
 from urllib import request as urllib_request, error as urllib_error
 
 from flask import Blueprint, current_app, jsonify, request
+from flask_limiter.util import get_remote_address
 
 chat_bp = Blueprint('chat', __name__)
 
 _last_request_time: float = 0.0
 _request_lock = Lock()
+
+
+def get_rate_limit_key():
+    """Get rate limit key for chat endpoint"""
+    return get_remote_address()
 
 
 @chat_bp.post('/message')
@@ -39,14 +45,12 @@ def chat_message():
     current_app.logger.info(f'Chat request received: message length={len(user_message)}, model={model}')
     
     try:
-        # Build messages array for OpenRouter API
         messages: List[Dict[str, str]] = []
 
         system_prompt = current_app.config.get('CHAT_SYSTEM_PROMPT')
         if system_prompt:
             messages.append({'role': 'system', 'content': system_prompt})
 
-        # Add conversation history if provided
         if conversation_history:
             for msg in conversation_history:
                 role = msg.get('role', 'user')
@@ -87,6 +91,7 @@ def chat_message():
         
         result = None
         last_error: Dict[str, str] = {}
+        last_error_is_timeout = False
         used_backup = False
         
         for key_index, current_api_key in enumerate(api_keys_to_try):
@@ -113,7 +118,8 @@ def chat_message():
 
             while attempt < max_attempts:
                 try:
-                    with urllib_request.urlopen(req, timeout=30) as response:
+                    # Increased timeout for chat requests - LLM APIs can be slow, especially for complex queries
+                    with urllib_request.urlopen(req, timeout=90) as response:
                         response_body = response.read().decode('utf-8')
                         result = json.loads(response_body)
                     key_succeeded = True
@@ -167,7 +173,14 @@ def chat_message():
                     e.fp = io.BytesIO(error_body.encode('utf-8'))
                     raise
                 except urllib_error.URLError as e:
-                    last_error = {'message': str(e.reason), 'status': '0'}
+                    error_reason = str(e.reason) if e.reason else str(e)
+                    # Check if it's a timeout error
+                    is_timeout = 'timed out' in error_reason.lower() or 'timeout' in error_reason.lower() or 'read operation timed out' in error_reason.lower()
+                    last_error_is_timeout = is_timeout
+                    if is_timeout:
+                        last_error = {'message': f'OpenRouter API request timed out after 90 seconds. The service may be busy. Please try again.', 'status': '408'}
+                    else:
+                        last_error = {'message': error_reason, 'status': '0'}
                     # For network errors, if we have a backup key and this is the primary, try backup
                     if key_index == 0 and api_key_backup:
                         break  # Exit inner loop to try backup key
@@ -181,6 +194,13 @@ def chat_message():
                 break  # Successfully got response, exit key loop
         
         if result is None:
+            # If it was a timeout error, return 408 directly instead of raising
+            if last_error_is_timeout:
+                return jsonify({
+                    'success': False,
+                    'message': last_error.get('message', 'OpenRouter API request timed out. The service may be busy. Please try again.')
+                }), 408
+            # Otherwise raise URLError which will be caught by outer handler
             raise urllib_error.URLError(last_error.get('message', 'OpenRouter request failed with all API keys'))
         
         # Extract the assistant's message from the response
@@ -255,14 +275,42 @@ def chat_message():
             'message': f'OpenRouter API request failed: {message}'
         }), status_code
     except urllib_error.URLError as e:
+        error_reason = str(e.reason) if e.reason else str(e)
+        error_message = str(e) if not e.reason else str(e.reason)
+        # Check if it's a timeout error - check both reason and full message
+        is_timeout = (
+            'timed out' in error_reason.lower() or 
+            'timeout' in error_reason.lower() or 
+            'timed out' in error_message.lower() or
+            'timeout' in error_message.lower() or
+            'read operation timed out' in error_message.lower()
+        )
+        if is_timeout:
+            return jsonify({
+                'success': False,
+                'message': 'OpenRouter API request timed out. The service may be busy. Please try again in a moment.'
+            }), 408
         return jsonify({
             'success': False,
-            'message': f'OpenRouter API request failed: {e.reason}'
+            'message': f'OpenRouter API request failed: {error_reason}'
         }), 502
     except Exception as e:
-        current_app.logger.error(f'Chat request exception: {str(e)}', exc_info=True)
+        error_message = str(e)
+        # Check if the exception message indicates a timeout
+        is_timeout = (
+            'timed out' in error_message.lower() or 
+            'timeout' in error_message.lower() or
+            'read operation timed out' in error_message.lower()
+        )
+        if is_timeout:
+            current_app.logger.warning(f'Chat request timeout: {error_message}')
+            return jsonify({
+                'success': False,
+                'message': 'Chat request timed out. The AI service may be busy. Please try again in a moment.'
+            }), 408
+        current_app.logger.error(f'Chat request exception: {error_message}', exc_info=True)
         return jsonify({
             'success': False,
-            'message': f'Chat request failed: {str(e)}'
+            'message': f'Chat request failed: {error_message}'
         }), 500
 

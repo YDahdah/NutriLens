@@ -222,6 +222,33 @@ const Activity = () => {
       return;
     }
 
+    if (newExercise.duration !== undefined && newExercise.duration < 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Duration cannot be negative.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (newExercise.duration !== undefined && newExercise.duration > 1400) {
+      toast({
+        title: 'Validation Error',
+        description: 'Duration cannot exceed 1400 minutes.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    if (newExercise.caloriesBurned !== undefined && newExercise.caloriesBurned < 0) {
+      toast({
+        title: 'Validation Error',
+        description: 'Calories burned cannot be negative.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
     try {
       setIsSaving(true);
       const response = await apiClient.post('/user-data/activity/exercise', {
@@ -305,7 +332,27 @@ const Activity = () => {
       return;
     }
 
-    const newWaterIntake = Math.max(0, activity.waterIntake + amount);
+    // Calculate new water intake with constraints: minimum 0L, maximum 5L (5000ml)
+    const newWaterIntake = Math.max(0, Math.min(5000, activity.waterIntake + amount));
+    
+    // Check if the change would exceed limits
+    if (activity.waterIntake + amount > 5000) {
+      toast({
+        title: 'Maximum Reached',
+        description: 'Water intake cannot exceed 5L (5000ml). Maximum is 5L.',
+        variant: 'destructive'
+      });
+      return;
+    }
+    
+    if (activity.waterIntake + amount < 0) {
+      toast({
+        title: 'Minimum Reached',
+        description: 'Water intake cannot be negative. Minimum is 0L.',
+        variant: 'destructive'
+      });
+      return;
+    }
     
     try {
       setIsSaving(true);
@@ -343,7 +390,19 @@ const Activity = () => {
     if (isNaN(amount) || amount < 0) {
       toast({
         title: 'Invalid Input',
-        description: 'Please enter a valid water amount.',
+        description: amount < 0 ? 'Water intake cannot be negative. Minimum is 0L.' : 'Please enter a valid water amount.',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Calculate new total by adding to existing water intake
+    const newWaterIntake = activity.waterIntake + amount;
+
+    if (newWaterIntake > 5000) {
+      toast({
+        title: 'Invalid Input',
+        description: `Adding ${amount}ml would exceed the maximum of 5L (5000ml). Current: ${activity.waterIntake}ml, Maximum: 5000ml.`,
         variant: 'destructive'
       });
       return;
@@ -352,16 +411,16 @@ const Activity = () => {
     try {
       setIsSaving(true);
       const response = await apiClient.put('/user-data/activity/water', {
-        waterIntake: amount
+        waterIntake: newWaterIntake
       });
 
       if (response.success) {
-        setActivity(prev => ({ ...prev, waterIntake: amount }));
+        setActivity(prev => ({ ...prev, waterIntake: newWaterIntake }));
         setManualWaterAmount('');
         setShowManualWaterInput(false);
         toast({
           title: 'Water Intake Updated',
-          description: `Total water intake: ${(amount / 1000).toFixed(1)}L`
+          description: `Added ${amount}ml. Total water intake: ${(newWaterIntake / 1000).toFixed(1)}L`
         });
       } else {
         throw new Error(response.message || 'Failed to update water intake');
@@ -470,7 +529,7 @@ const Activity = () => {
                         variant="outline"
                         size="sm"
                         onClick={() => handleWaterIntakeChange(250)}
-                        disabled={isSaving}
+                        disabled={isSaving || activity.waterIntake >= 5000}
                       >
                         +250ml
                       </Button>
@@ -478,7 +537,7 @@ const Activity = () => {
                         variant="outline"
                         size="sm"
                         onClick={() => handleWaterIntakeChange(500)}
-                        disabled={isSaving}
+                        disabled={isSaving || activity.waterIntake >= 5000}
                       >
                         +500ml
                       </Button>
@@ -486,7 +545,7 @@ const Activity = () => {
                         variant="outline"
                         size="sm"
                         onClick={() => handleWaterIntakeChange(1000)}
-                        disabled={isSaving}
+                        disabled={isSaving || activity.waterIntake >= 5000}
                       >
                         +1L
                       </Button>
@@ -523,7 +582,13 @@ const Activity = () => {
                           type="number"
                           placeholder="Enter amount (ml)"
                           value={manualWaterAmount}
-                          onChange={(e) => setManualWaterAmount(e.target.value)}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            const numValue = parseFloat(value);
+                            if (value === '' || (!isNaN(numValue) && numValue >= 0)) {
+                              setManualWaterAmount(value);
+                            }
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && manualWaterAmount && !isSaving) {
                               e.preventDefault();
@@ -532,6 +597,7 @@ const Activity = () => {
                           }}
                           className="w-32"
                           min="0"
+                          max="5000"
                           step="1"
                           disabled={isSaving}
                         />
@@ -558,11 +624,11 @@ const Activity = () => {
                   <div className="w-full bg-gray-200 rounded-full h-2">
                     <div
                       className="bg-blue-500 h-2 rounded-full transition-all"
-                      style={{ width: `${Math.min(100, (activity.waterIntake / 2000) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (activity.waterIntake / 5000) * 100)}%` }}
                     />
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
-                    Goal: 2L (2000ml)
+                    Maximum: 5L (5000ml)
                   </div>
                 </div>
               </Card>
@@ -694,12 +760,20 @@ const Activity = () => {
                             value={newExercise.duration ?? ''}
                             onChange={(e) => {
                               const value = e.target.value;
+                              const numValue = value === '' ? undefined : parseFloat(value);
+                              if (numValue !== undefined && numValue < 0) {
+                                return;
+                              }
+                              if (numValue !== undefined && numValue > 1400) {
+                                return;
+                              }
                               setNewExercise({ 
                                 ...newExercise, 
-                                duration: value === '' ? undefined : parseFloat(value) || undefined 
+                                duration: numValue || undefined 
                               });
                             }}
                             min="0"
+                            max="1400"
                             step="1"
                             placeholder="0"
                           />
@@ -712,9 +786,13 @@ const Activity = () => {
                             value={newExercise.caloriesBurned ?? ''}
                             onChange={(e) => {
                               const value = e.target.value;
+                              const numValue = value === '' ? undefined : parseFloat(value);
+                              if (numValue !== undefined && numValue < 0) {
+                                return;
+                              }
                               setNewExercise({ 
                                 ...newExercise, 
-                                caloriesBurned: value === '' ? undefined : parseFloat(value) || undefined 
+                                caloriesBurned: numValue || undefined 
                               });
                             }}
                             min="0"
